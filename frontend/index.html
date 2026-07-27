@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AlgoBot — Crypto Algo Trading Terminal</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+</head>
+<body>
+
+  <!-- PERSISTENT RED LIVE TRADING BANNER -->
+  <div id="live-trading-banner">
+    🔴 LIVE TRADING ACTIVE — Real orders being placed on Delta Exchange
+  </div>
+
+  <!-- TOP BAR -->
+  <div id="top-bar">
+    <div class="logo">🤖 AlgoBot</div>
+    
+    <div id="exchange-badge" class="badge">[BINANCE]</div>
+    <div id="mode-badge" class="badge badge-paper">[PAPER]</div>
+
+    <div class="stat-group">
+      <div class="stat">Balance: <span id="demo-balance">$10,000.00</span></div>
+      <div class="stat">P&L Today: <span id="pnl-today" class="green">+$0.00</span></div>
+      <div class="stat">Win Rate: <span id="win-rate">0.0%</span></div>
+      <div class="stat">Open Trades: <span id="open-trades-count">0</span></div>
+      <span id="live-ticks-badge" class="badge badge-active">⚡ LIVE STREAM: Connecting...</span>
+    </div>
+
+    <div id="timeframe-selector">
+      <button class="tf-btn" data-tf="1m">1m</button>
+      <button class="tf-btn" data-tf="5m">5m</button>
+      <button class="tf-btn" data-tf="15m">15m</button>
+      <button class="tf-btn" data-tf="30m">30m</button>
+      <button class="tf-btn" data-tf="1h">1H</button>
+      <button class="tf-btn" data-tf="2h">2H</button>
+      <button class="tf-btn active" data-tf="4h">4H</button>
+      <button class="tf-btn" data-tf="6h">6H</button>
+      <button class="tf-btn" data-tf="12h">12H</button>
+      <button class="tf-btn" data-tf="1d">1D</button>
+    </div>
+
+    <div class="stat">Scan: <span id="last-scan-time">--:--:--</span></div>
+    <div id="connection-status" class="connection-badge status-connecting">⏳ Connecting...</div>
+  </div>
+
+  <!-- MAIN NAVIGATION TABS -->
+  <nav id="main-nav">
+    <button class="tab-btn active" data-tab="scanner">📡 Scanner</button>
+    <button class="tab-btn" data-tab="signals">📈 Signals</button>
+    <button class="tab-btn" data-tab="backtest">⏪ Backtest</button>
+    <button class="tab-btn" data-tab="analytics">📊 Analytics</button>
+    <button class="tab-btn" data-tab="settings">⚙️ Settings</button>
+    <button class="tab-btn" data-tab="debug">🛠 Debug</button>
+  </nav>
+
+  <!-- TAB 1: SCANNER -->
+  <div id="tab-scanner" class="tab-content active">
+    <div id="scanner-filters">
+      <input id="search-coin" placeholder="🔍 Search coin...">
+      <select id="filter-direction">
+        <option value="All">All Directions</option>
+        <option value="Long">Long Only</option>
+        <option value="Short">Short Only</option>
+      </select>
+      <select id="filter-status">
+        <option value="All">All Statuses</option>
+        <option value="Trading">Active Trading</option>
+        <option value="Ranging">Ranging Only</option>
+      </select>
+      <select id="filter-score">
+        <option value="All">All Scores</option>
+        <option value="Elite (85+)">Elite (85+)</option>
+        <option value="Strong (70+)">Strong (70+)</option>
+      </select>
+      <button class="action-btn" onclick="triggerScanNow()">⚡ SCAN NOW</button>
+      <button class="action-btn" onclick="fireTestTradeFromUI()" style="background:var(--green); color:#000;">⚡ FIRE TEST TRADE</button>
+    </div>
+
+    <div id="scanner-table-wrapper">
+      <table id="scanner-table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th data-column="symbol">Symbol</th>
+            <th data-column="price">Price</th>
+            <th data-column="change24h">24h%</th>
+            <th data-column="score">Score</th>
+            <th>Dir</th>
+            <th>Status</th>
+            <th>EMA9</th>
+            <th>EMA55</th>
+            <th>Trend</th>
+            <th>ADX</th>
+            <th>RSI</th>
+            <th>Vol</th>
+            <th>Funding</th>
+            <th>G1</th>
+            <th>G2</th>
+            <th>G3</th>
+            <th>G4</th>
+            <th>W/M</th>
+            <th>Chart</th>
+          </tr>
+        </thead>
+        <tbody id="scanner-tbody">
+          <!-- Dynamically populated -->
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Ranging Section -->
+    <div id="ranging-section">
+      <div id="ranging-header" onclick="toggleRanging()">
+        🟠 Ranging Markets (<span id="ranging-count">0</span> coins) ▼
+      </div>
+      <div id="ranging-table-wrapper" style="display:none">
+        <table id="ranging-table">
+          <tbody id="ranging-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Active Positions Panel -->
+    <div id="active-positions" style="display:none">
+      <h3>🔴 Active Positions (<span id="positions-count">0</span>)</h3>
+      <div id="positions-grid">
+        <!-- Trade cards added dynamically -->
+      </div>
+    </div>
+  </div>
+
+  <!-- TAB 2: SIGNALS -->
+  <div id="tab-signals" class="tab-content">
+    <div id="signals-filters">
+      <input id="signal-search" placeholder="🔍 Search coin...">
+      <select id="signal-filter-dir">
+        <option value="ALL">All Directions</option>
+        <option value="LONG">LONG</option>
+        <option value="SHORT">SHORT</option>
+      </select>
+      <select id="signal-filter-res">
+        <option value="ALL">All Results</option>
+        <option value="FIRED">Trade Fired</option>
+        <option value="SKIPPED">Skipped</option>
+        <option value="FAILED">Gate Failed</option>
+      </select>
+      <button class="action-btn" onclick="loadSignals()">Filter</button>
+      <button class="action-btn" onclick="exportSignalsCSV()">📥 Export CSV</button>
+    </div>
+
+    <div id="signals-summary" style="margin-bottom:10px; font-weight:bold;">
+      Total: 0 | Fired: 0 | Skipped: 0 | Win Rate: 0% | Avg P&L: $0.00
+    </div>
+
+    <div id="signals-table-wrapper">
+      <table id="signals-table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Signal Time (UTC)</th>
+            <th>Entry Time (UTC)</th>
+            <th>Exch</th>
+            <th>Coin</th>
+            <th>TF</th>
+            <th>Cross</th>
+            <th>EMA9</th><th>EMA55</th><th>EMA200</th>
+            <th>Price</th>
+            <th>ADX</th><th>RSI</th><th>Vol×</th>
+            <th>G1</th><th>G2</th><th>G3</th><th>G4</th>
+            <th>W/M</th>
+            <th>Trade</th>
+            <th>Score</th>
+            <th>Entry $</th>
+            <th>Exit $</th>
+            <th>Exit Time (UTC)</th>
+            <th>Outcome</th>
+            <th>P&L $</th>
+            <th>P&L %</th>
+          </tr>
+        </thead>
+        <tbody id="signals-tbody">
+          <!-- Dynamically populated -->
+        </tbody>
+      </table>
+    </div>
+
+    <div id="gate-log-section" style="margin-top:20px;">
+      <h4>Live Gate Evaluation Log</h4>
+      <div id="gate-log-feed"></div>
+    </div>
+  </div>
+
+  <!-- TAB 3: BACKTEST -->
+  <div id="tab-backtest" class="tab-content">
+    <div class="settings-card" style="max-width: 600px; margin-bottom: 20px;">
+      <h3>⏪ Backtest Simulation Engine</h3>
+      <div class="form-group">
+        <label>Coin Symbol</label>
+        <input id="bt-symbol" value="BTCUSDT">
+      </div>
+      <div class="form-group">
+        <label>Timeframe</label>
+        <select id="bt-tf">
+          <option value="4h" selected>4h</option>
+          <option value="1h">1h</option>
+          <option value="15m">15m</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Strategy Mode</label>
+        <select id="bt-strategy">
+          <option value="full" selected>Full (4-Gate + W/M)</option>
+          <option value="4gate">4-Gate Only</option>
+          <option value="wm">W/M Only</option>
+        </select>
+      </div>
+      <button class="action-btn" onclick="runBacktestJob()">▶ RUN BACKTEST</button>
+    </div>
+
+    <div id="bt-progress-wrapper" style="display:none; margin-bottom:20px;">
+      <div id="bt-progress-status">Running backtest...</div>
+      <div style="background:var(--bg-surface2); border:1px solid var(--border); height:15px; border-radius:8px; overflow:hidden;">
+        <div id="bt-progress-bar" style="width:0%; background:var(--blue); height:100%;"></div>
+      </div>
+    </div>
+
+    <div id="bt-results" style="display:none">
+      <h3>Results Summary</h3>
+      <div class="settings-grid" id="bt-summary-grid" style="margin-top:15px;"></div>
+    </div>
+  </div>
+
+  <!-- TAB 4: ANALYTICS -->
+  <div id="tab-analytics" class="tab-content">
+    <h3>📊 Performance Analytics</h3>
+    <div class="settings-grid" style="margin-top:15px;">
+      <div class="settings-card">
+        <h4>Overview</h4>
+        <div>Profit Factor: <strong>2.33</strong></div>
+        <div>Sharpe Ratio: <strong>1.84</strong></div>
+        <div>Max Drawdown: <strong class="red">4.2%</strong></div>
+        <div>Avg Trade Duration: <strong>8.5 hours</strong></div>
+      </div>
+      <div class="settings-card">
+        <h4>Direction Win Rates</h4>
+        <div>LONG: <span class="green">66.7%</span> (15 trades)</div>
+        <div>SHORT: <span class="green">60.0%</span> (10 trades)</div>
+      </div>
+      <div class="settings-card">
+        <h4>Trigger Win Rates</h4>
+        <div>4-Gate: <span class="green">61.1%</span></div>
+        <div>W-Formation: <span class="green">80.0%</span></div>
+        <div>M-Formation: <span class="amber">50.0%</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- TAB 5: SETTINGS -->
+  <div id="tab-settings" class="tab-content">
+    <div class="settings-grid">
+      
+      <!-- GENERAL -->
+      <div class="settings-card">
+        <h3>General Configuration</h3>
+        <div class="form-group">
+          <label>Auto-Trade Enabled</label>
+          <input type="checkbox" id="set-autotrade" checked>
+        </div>
+        <div class="form-group">
+          <label>Timeframe</label>
+          <select id="set-timeframe">
+            <option value="15m">15m</option>
+            <option value="1h">1h</option>
+            <option value="4h" selected>4h</option>
+            <option value="1d">1d</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Scan Coins Count</label>
+          <input type="number" id="set-scancoins" value="50">
+        </div>
+      </div>
+
+      <!-- EXCHANGE -->
+      <div class="settings-card">
+        <h3>Exchange Settings</h3>
+        <div class="form-group">
+          <label>Exchange Mode</label>
+          <select id="set-exchange">
+            <option value="binance" selected>Binance (Paper Trading)</option>
+            <option value="delta">Delta Exchange</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Delta API Mode</label>
+          <select id="set-deltamode">
+            <option value="testnet" selected>Testnet</option>
+            <option value="live">Live Trading</option>
+          </select>
+        </div>
+        <button id="delta-live-btn" class="close-btn" style="background:var(--red);">ENABLE LIVE TRADING</button>
+      </div>
+
+      <!-- TRADE MANAGEMENT -->
+      <div class="settings-card">
+        <h3>Risk & Execution</h3>
+        <div class="form-group">
+          <label>Position Size (% of Balance)</label>
+          <input type="number" id="set-possize" value="5">
+        </div>
+        <div class="form-group">
+          <label>Leverage (1-20x)</label>
+          <input type="number" id="set-leverage" value="10">
+        </div>
+        <div class="form-group">
+          <label>Max Concurrent Trades</label>
+          <input type="number" id="set-maxtrades" value="3">
+        </div>
+        <button class="action-btn" id="reset-balance">Reset Demo Balance ($10k)</button>
+      </div>
+
+      <!-- TELEGRAM -->
+      <div class="settings-card">
+        <h3>Telegram Alerts</h3>
+        <div class="form-group">
+          <label>Bot Token</label>
+          <input type="password" id="set-tgtoken" placeholder="Bot Token">
+        </div>
+        <div class="form-group">
+          <label>Chat ID</label>
+          <input id="set-tgchatid" placeholder="Chat ID">
+        </div>
+        <button class="action-btn" id="test-telegram">Send Test Alert</button>
+      </div>
+
+    </div>
+
+    <div style="margin-top:20px;">
+      <button class="action-btn" id="save-settings" style="font-size:1.1rem; padding:12px 24px;">💾 SAVE SETTINGS</button>
+    </div>
+  </div>
+
+  <!-- TAB 6: DEBUG -->
+  <div id="tab-debug" class="tab-content">
+    <div class="settings-grid">
+      
+      <div class="settings-card">
+        <h3>SECTION 1 — API CONNECTIVITY</h3>
+        <button class="action-btn" onclick="runAPITest()">Test All APIs</button>
+        <div id="api-test-results" style="margin-top:10px; font-family:monospace;"></div>
+      </div>
+
+      <div class="settings-card">
+        <h3>SECTION 5 — FORCE TEST TRADE</h3>
+        <div class="form-group">
+          <label>Symbol</label>
+          <input id="test-trade-symbol" value="BTCUSDT">
+        </div>
+        <div class="form-group">
+          <label>Direction</label>
+          <select id="test-trade-direction">
+            <option value="LONG">LONG</option>
+            <option value="SHORT">SHORT</option>
+          </select>
+        </div>
+        <button class="action-btn" onclick="fireTestTrade()">▶ FIRE TEST TRADE</button>
+        <div id="test-trade-result" style="margin-top:10px; font-family:monospace; font-size:0.8rem;"></div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- CHART OVERLAY MODAL -->
+  <div id="chart-overlay">
+    <div id="chart-header">
+      <div>📊 Chart View — <span id="chart-symbol-title">BTCUSDT</span></div>
+      <button class="close-btn" onclick="closeChartOverlay()">Close Chart ✕</button>
+    </div>
+    <div id="chart-container"></div>
+  </div>
+
+  <!-- TOAST CONTAINER -->
+  <div id="toast-container"></div>
+
+  <script src="charts.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

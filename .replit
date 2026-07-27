@@ -1,0 +1,9 @@
+run = "node server.js"
+language = "nodejs"
+
+[nix]
+channel = "stable-22_11"
+
+[[ports]]
+localPort = 3000
+externalPort = 80

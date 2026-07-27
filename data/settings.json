@@ -1,0 +1,61 @@
+{
+  "exchange": "binance",
+  "deltaMode": "testnet",
+  "timeframe": "1h",
+  "scanCoins": 100,
+  "scanInterval": 30,
+  "autoTradeEnabled": true,
+  "autoTradePaused": false,
+  "ema": {
+    "fast": 9,
+    "slow": 55,
+    "trend": 200
+  },
+  "rsi": {
+    "period": 14,
+    "min": 30,
+    "max": 65
+  },
+  "adx": {
+    "period": 14,
+    "threshold": 20
+  },
+  "volume": {
+    "period": 20,
+    "multiplier": 1.5
+  },
+  "macd": {
+    "fast": 12,
+    "slow": 26,
+    "signal": 9
+  },
+  "supertrend": {
+    "atrPeriod": 10,
+    "multiplier": 3
+  },
+  "fibonacci": {
+    "lookback": 100
+  },
+  "sr": {
+    "lookback": 200
+  },
+  "trade": {
+    "positionSizePct": 0.5,
+    "leverage": 10,
+    "maxConcurrentTrades": 5
+  },
+  "wm": {
+    "enabled": true,
+    "lookback": 25,
+    "v2TolerancePct": 2,
+    "p2TolerancePct": 2,
+    "autoExecute": true,
+    "countdownSeconds": 10,
+    "soundAlert": true
+  },
+  "demoBalance": 10000,
+  "telegram": {
+    "botToken": "",
+    "chatId": ""
+  }
+}
