@@ -1,0 +1,641 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AlgoBot — Analytics Dashboard</title>
+  <meta name="description" content="Real-time performance analytics for the AlgoBot crypto trading platform">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    :root {
+      --bg-primary: #0a0e17;
+      --bg-secondary: #111827;
+      --bg-card: #1a2332;
+      --bg-card-hover: #1f2b3d;
+      --border: #2d3748;
+      --text-primary: #f0f4f8;
+      --text-secondary: #94a3b8;
+      --text-muted: #64748b;
+      --green: #22c55e;
+      --green-dim: rgba(34, 197, 94, 0.15);
+      --red: #ef4444;
+      --red-dim: rgba(239, 68, 68, 0.15);
+      --blue: #3b82f6;
+      --blue-dim: rgba(59, 130, 246, 0.15);
+      --amber: #f59e0b;
+      --amber-dim: rgba(245, 158, 11, 0.15);
+      --purple: #a855f7;
+      --purple-dim: rgba(168, 85, 247, 0.15);
+      --cyan: #06b6d4;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      min-height: 100vh;
+    }
+
+    .dashboard-header {
+      background: linear-gradient(135deg, var(--bg-secondary) 0%, var(--bg-card) 100%);
+      border-bottom: 1px solid var(--border);
+      padding: 20px 32px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .dashboard-header h1 {
+      font-size: 1.5rem;
+      font-weight: 700;
+      background: linear-gradient(135deg, var(--blue), var(--cyan));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .dashboard-header .back-link {
+      color: var(--text-secondary);
+      text-decoration: none;
+      font-size: 0.85rem;
+      padding: 8px 16px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      transition: all 0.2s;
+    }
+    .dashboard-header .back-link:hover {
+      background: var(--bg-card);
+      color: var(--text-primary);
+    }
+
+    .dashboard-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 20px;
+      padding: 24px 32px;
+    }
+
+    .stat-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px 24px;
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+    .stat-card:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+    }
+
+    .stat-card .label {
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+    }
+
+    .stat-card .value {
+      font-size: 1.75rem;
+      font-weight: 700;
+      line-height: 1;
+    }
+
+    .stat-card .sub {
+      font-size: 0.8rem;
+      color: var(--text-secondary);
+      margin-top: 6px;
+    }
+
+    .positive { color: var(--green); }
+    .negative { color: var(--red); }
+    .neutral { color: var(--blue); }
+
+    .chart-section {
+      padding: 0 32px 32px;
+    }
+
+    .chart-row {
+      display: grid;
+      grid-template-columns: 2fr 1fr;
+      gap: 20px;
+      margin-bottom: 20px;
+    }
+
+    .chart-row.equal {
+      grid-template-columns: 1fr 1fr;
+    }
+
+    .chart-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 24px;
+    }
+
+    .chart-card h3 {
+      font-size: 0.9rem;
+      font-weight: 600;
+      margin-bottom: 16px;
+      color: var(--text-secondary);
+    }
+
+    .chart-container {
+      position: relative;
+      height: 300px;
+    }
+
+    /* Events log table */
+    .events-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.8rem;
+    }
+    .events-table th {
+      text-align: left;
+      padding: 10px 12px;
+      color: var(--text-muted);
+      font-weight: 600;
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      border-bottom: 1px solid var(--border);
+    }
+    .events-table td {
+      padding: 10px 12px;
+      border-bottom: 1px solid rgba(45, 55, 72, 0.5);
+      color: var(--text-secondary);
+    }
+    .events-table tr:hover td {
+      background: var(--bg-card-hover);
+    }
+
+    .event-badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 0.7rem;
+      font-weight: 600;
+    }
+    .event-badge.trade-opened { background: var(--green-dim); color: var(--green); }
+    .event-badge.trade-closed { background: var(--blue-dim); color: var(--blue); }
+    .event-badge.tp-hit { background: var(--amber-dim); color: var(--amber); }
+    .event-badge.heartbeat { background: var(--purple-dim); color: var(--purple); }
+    .event-badge.error { background: var(--red-dim); color: var(--red); }
+    .event-badge.default { background: rgba(100, 116, 139, 0.15); color: var(--text-muted); }
+
+    .refresh-btn {
+      background: var(--blue);
+      color: white;
+      border: none;
+      padding: 8px 20px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 0.8rem;
+      font-weight: 600;
+      transition: all 0.2s;
+    }
+    .refresh-btn:hover { background: #2563eb; transform: scale(1.02); }
+
+    .loading-spinner {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 200px;
+      color: var(--text-muted);
+      font-size: 0.9rem;
+    }
+
+    @media (max-width: 768px) {
+      .chart-row, .chart-row.equal {
+        grid-template-columns: 1fr;
+      }
+      .dashboard-grid {
+        grid-template-columns: repeat(2, 1fr);
+        padding: 16px;
+      }
+      .chart-section { padding: 0 16px 16px; }
+      .dashboard-header { padding: 16px; }
+    }
+
+    @media (max-width: 480px) {
+      .dashboard-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+<div class="dashboard-header">
+  <h1>📊 Analytics Dashboard</h1>
+  <div>
+    <button class="refresh-btn" onclick="loadDashboard()">🔄 Refresh</button>
+    <a href="/" class="back-link">← Back to Scanner</a>
+  </div>
+</div>
+
+<!-- KPI Cards -->
+<div class="dashboard-grid" id="kpi-cards">
+  <div class="stat-card">
+    <div class="label">Total P&L</div>
+    <div class="value" id="kpi-total-pnl">$0.00</div>
+    <div class="sub" id="kpi-total-trades">0 trades</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Win Rate</div>
+    <div class="value neutral" id="kpi-win-rate">0%</div>
+    <div class="sub" id="kpi-win-loss">0W / 0L</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Profit Factor</div>
+    <div class="value neutral" id="kpi-profit-factor">0.00</div>
+    <div class="sub">Gross Win / Gross Loss</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Sharpe Ratio</div>
+    <div class="value neutral" id="kpi-sharpe">0.00</div>
+    <div class="sub">Risk-adjusted returns</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Max Drawdown</div>
+    <div class="value negative" id="kpi-drawdown">0%</div>
+    <div class="sub">Peak-to-trough decline</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Avg R:R</div>
+    <div class="value neutral" id="kpi-avg-rr">0.00</div>
+    <div class="sub" id="kpi-avg-duration">Avg: 0h</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Expectancy</div>
+    <div class="value" id="kpi-expectancy">$0.00</div>
+    <div class="sub">Expected per trade</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Win Streak</div>
+    <div class="value neutral" id="kpi-streak">0</div>
+    <div class="sub" id="kpi-streak-detail">Max: 0W / 0L</div>
+  </div>
+</div>
+
+<!-- Charts -->
+<div class="chart-section">
+  <!-- Equity Curve + Win/Loss Pie -->
+  <div class="chart-row">
+    <div class="chart-card">
+      <h3>📈 Equity Curve</h3>
+      <div class="chart-container">
+        <canvas id="equityChart"></canvas>
+      </div>
+    </div>
+    <div class="chart-card">
+      <h3>🎯 Win / Loss Distribution</h3>
+      <div class="chart-container">
+        <canvas id="winLossChart"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <!-- Strategy + Direction Breakdown -->
+  <div class="chart-row equal">
+    <div class="chart-card">
+      <h3>⚡ Performance by Strategy</h3>
+      <div class="chart-container">
+        <canvas id="strategyChart"></canvas>
+      </div>
+    </div>
+    <div class="chart-card">
+      <h3>📐 Performance by Direction</h3>
+      <div class="chart-container">
+        <canvas id="directionChart"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <!-- Top Coins + Bot Events -->
+  <div class="chart-row equal">
+    <div class="chart-card">
+      <h3>🪙 Top Performing Coins</h3>
+      <div class="chart-container">
+        <canvas id="coinsChart"></canvas>
+      </div>
+    </div>
+    <div class="chart-card">
+      <h3>📋 Recent Bot Events</h3>
+      <div style="max-height: 300px; overflow-y: auto;">
+        <table class="events-table" id="events-table">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Event</th>
+              <th>Message</th>
+            </tr>
+          </thead>
+          <tbody id="events-tbody">
+            <tr><td colspan="3" style="text-align:center; padding: 40px;">Loading...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  let charts = {};
+
+  async function loadDashboard() {
+    try {
+      const [analyticsRes, eventsRes] = await Promise.all([
+        fetch('/api/analytics'),
+        fetch('/api/analytics/events?limit=30')
+      ]);
+
+      const data = await analyticsRes.json();
+      const events = await eventsRes.json();
+
+      updateKPIs(data);
+      renderEquityCurve(data.equityCurve || []);
+      renderWinLoss(data.winLossRatio || {});
+      renderStrategyBreakdown(data.byTrigger || {});
+      renderDirectionBreakdown(data.byDirection || {});
+      renderTopCoins(data.topCoins || []);
+      renderEvents(events || []);
+    } catch (err) {
+      console.error('Dashboard load error:', err);
+    }
+  }
+
+  function updateKPIs(data) {
+    const pnl = data.totalPnL || 0;
+    const el = document.getElementById('kpi-total-pnl');
+    el.textContent = (pnl >= 0 ? '+' : '') + '$' + pnl.toFixed(2);
+    el.className = 'value ' + (pnl >= 0 ? 'positive' : 'negative');
+
+    document.getElementById('kpi-total-trades').textContent = `${data.totalTrades || 0} closed trades`;
+
+    const wr = data.winLossRatio || {};
+    document.getElementById('kpi-win-rate').textContent = (wr.winRate || 0).toFixed(1) + '%';
+    document.getElementById('kpi-win-loss').textContent = `${wr.wins || 0}W / ${wr.losses || 0}L`;
+
+    document.getElementById('kpi-profit-factor').textContent = (data.profitFactor || 0).toFixed(2);
+    document.getElementById('kpi-sharpe').textContent = (data.sharpeRatio || 0).toFixed(2);
+    document.getElementById('kpi-drawdown').textContent = (data.maxDrawdown || 0).toFixed(1) + '%';
+    document.getElementById('kpi-avg-rr').textContent = (data.avgRR || 0).toFixed(2);
+    document.getElementById('kpi-avg-duration').textContent = 'Avg: ' + (data.avgTradeDuration || '0h');
+
+    const exp = data.expectancy || 0;
+    const expEl = document.getElementById('kpi-expectancy');
+    expEl.textContent = (exp >= 0 ? '+' : '') + '$' + exp.toFixed(2);
+    expEl.className = 'value ' + (exp >= 0 ? 'positive' : 'negative');
+
+    const streaks = data.streaks || {};
+    const cs = streaks.currentStreak || 0;
+    document.getElementById('kpi-streak').textContent = cs > 0 ? `${cs}W` : cs < 0 ? `${Math.abs(cs)}L` : '0';
+    document.getElementById('kpi-streak-detail').textContent = `Max: ${streaks.maxWinStreak || 0}W / ${streaks.maxLossStreak || 0}L`;
+  }
+
+  function renderEquityCurve(curve) {
+    if (charts.equity) charts.equity.destroy();
+    const ctx = document.getElementById('equityChart').getContext('2d');
+
+    const labels = curve.map(p => p.date || '');
+    const balances = curve.map(p => p.balance || 10000);
+
+    charts.equity = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [{
+          label: 'Balance ($)',
+          data: balances,
+          borderColor: '#3b82f6',
+          backgroundColor: 'rgba(59, 130, 246, 0.1)',
+          fill: true,
+          tension: 0.3,
+          pointRadius: 2,
+          pointHoverRadius: 5,
+          borderWidth: 2
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false }
+        },
+        scales: {
+          x: {
+            grid: { color: 'rgba(45, 55, 72, 0.5)' },
+            ticks: { color: '#64748b', maxTicksLimit: 10 }
+          },
+          y: {
+            grid: { color: 'rgba(45, 55, 72, 0.5)' },
+            ticks: {
+              color: '#64748b',
+              callback: v => '$' + v.toLocaleString()
+            }
+          }
+        }
+      }
+    });
+  }
+
+  function renderWinLoss(wl) {
+    if (charts.winLoss) charts.winLoss.destroy();
+    const ctx = document.getElementById('winLossChart').getContext('2d');
+
+    charts.winLoss = new Chart(ctx, {
+      type: 'doughnut',
+      data: {
+        labels: ['Wins', 'Losses'],
+        datasets: [{
+          data: [wl.wins || 0, wl.losses || 0],
+          backgroundColor: ['#22c55e', '#ef4444'],
+          borderWidth: 0,
+          hoverOffset: 8
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        cutout: '65%',
+        plugins: {
+          legend: {
+            position: 'bottom',
+            labels: { color: '#94a3b8', padding: 16, font: { size: 12 } }
+          }
+        }
+      }
+    });
+  }
+
+  function renderStrategyBreakdown(strategies) {
+    if (charts.strategy) charts.strategy.destroy();
+    const ctx = document.getElementById('strategyChart').getContext('2d');
+    const labels = Object.keys(strategies);
+    const wins = labels.map(k => strategies[k].wins || 0);
+    const losses = labels.map(k => (strategies[k].trades || 0) - (strategies[k].wins || 0));
+
+    charts.strategy = new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [
+          { label: 'Wins', data: wins, backgroundColor: '#22c55e', borderRadius: 4 },
+          { label: 'Losses', data: losses, backgroundColor: '#ef4444', borderRadius: 4 }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: {
+            position: 'top',
+            labels: { color: '#94a3b8', font: { size: 11 } }
+          }
+        },
+        scales: {
+          x: {
+            stacked: true,
+            grid: { display: false },
+            ticks: { color: '#64748b', font: { size: 10 } }
+          },
+          y: {
+            stacked: true,
+            grid: { color: 'rgba(45, 55, 72, 0.5)' },
+            ticks: { color: '#64748b' }
+          }
+        }
+      }
+    });
+  }
+
+  function renderDirectionBreakdown(dirs) {
+    if (charts.direction) charts.direction.destroy();
+    const ctx = document.getElementById('directionChart').getContext('2d');
+
+    const labels = Object.keys(dirs);
+    const winRates = labels.map(k => dirs[k].winRate || 0);
+    const totalPnLs = labels.map(k => dirs[k].totalPnL || 0);
+
+    charts.direction = new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [
+          {
+            label: 'Win Rate %',
+            data: winRates,
+            backgroundColor: '#3b82f6',
+            borderRadius: 4,
+            yAxisID: 'y1'
+          },
+          {
+            label: 'Total PnL ($)',
+            data: totalPnLs,
+            backgroundColor: totalPnLs.map(v => v >= 0 ? '#22c55e' : '#ef4444'),
+            borderRadius: 4,
+            yAxisID: 'y2'
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: {
+            position: 'top',
+            labels: { color: '#94a3b8', font: { size: 11 } }
+          }
+        },
+        scales: {
+          x: { grid: { display: false }, ticks: { color: '#64748b' } },
+          y1: {
+            position: 'left',
+            grid: { color: 'rgba(45, 55, 72, 0.5)' },
+            ticks: { color: '#64748b', callback: v => v + '%' },
+            max: 100
+          },
+          y2: {
+            position: 'right',
+            grid: { display: false },
+            ticks: { color: '#64748b', callback: v => '$' + v }
+          }
+        }
+      }
+    });
+  }
+
+  function renderTopCoins(coins) {
+    if (charts.coins) charts.coins.destroy();
+    const ctx = document.getElementById('coinsChart').getContext('2d');
+
+    const labels = coins.map(c => c.symbol || '');
+    const pnls = coins.map(c => c.totalPnL || 0);
+
+    charts.coins = new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [{
+          label: 'Total PnL ($)',
+          data: pnls,
+          backgroundColor: pnls.map(v => v >= 0 ? 'rgba(34, 197, 94, 0.7)' : 'rgba(239, 68, 68, 0.7)'),
+          borderColor: pnls.map(v => v >= 0 ? '#22c55e' : '#ef4444'),
+          borderWidth: 1,
+          borderRadius: 4
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        indexAxis: 'y',
+        plugins: {
+          legend: { display: false }
+        },
+        scales: {
+          x: {
+            grid: { color: 'rgba(45, 55, 72, 0.5)' },
+            ticks: { color: '#64748b', callback: v => '$' + v }
+          },
+          y: {
+            grid: { display: false },
+            ticks: { color: '#94a3b8', font: { size: 11 } }
+          }
+        }
+      }
+    });
+  }
+
+  function renderEvents(events) {
+    const tbody = document.getElementById('events-tbody');
+    if (!events || events.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="3" style="text-align:center; padding: 40px; color: var(--text-muted);">No events yet — start trading to see activity</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = events.map(e => {
+      const type = (e.event_type || '').toLowerCase().replace(/_/g, '-');
+      let badgeClass = 'default';
+      if (type.includes('trade-opened')) badgeClass = 'trade-opened';
+      else if (type.includes('trade-closed')) badgeClass = 'trade-closed';
+      else if (type.includes('tp')) badgeClass = 'tp-hit';
+      else if (type.includes('heartbeat')) badgeClass = 'heartbeat';
+      else if (type.includes('error')) badgeClass = 'error';
+
+      const time = e.created_at ? new Date(e.created_at).toLocaleString() : '';
+      return `<tr>
+        <td>${time}</td>
+        <td><span class="event-badge ${badgeClass}">${e.event_type || ''}</span></td>
+        <td>${e.message || ''}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  // Auto-refresh every 60 seconds
+  loadDashboard();
+  setInterval(loadDashboard, 60000);
+</script>
+</body>
+</html>

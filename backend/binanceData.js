@@ -25,13 +25,30 @@ function checkRateLimit() {
 
 async function fetchWithRateLimit(url, options = {}) {
   if (checkRateLimit()) {
-    await sleep(200);
+    await sleep(150);
   }
-  const response = await axios.get(url, { timeout: 10000, ...options });
+  const response = await axios.get(url, { timeout: 8000, headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }, ...options });
   return response.data;
 }
 
-// Major crypto perpetuals that guarantee active 24/7 high-frequency price ticks
+// Futures symbol mapper for meme coins that use '1000' multiplier on Binance Futures
+const FUTURES_MEME_MAP = {
+  'PEPEUSDT': '1000PEPEUSDT',
+  'SHIBUSDT': '1000SHIBUSDT',
+  'BONKUSDT': '1000BONKUSDT',
+  'FLOKIUSDT': '1000FLOKIUSDT',
+  'LUNCUSDT': '1000LUNCUSDT',
+  'XECUSDT': '1000XECUSDT',
+  'SATSUSDT': '1000SATSUSDT',
+  'RATSUSDT': '1000RATSUSDT',
+  'CATUSDT': '1000CATUSDT'
+};
+
+function getFuturesSymbol(symbol) {
+  return FUTURES_MEME_MAP[symbol] || symbol;
+}
+
+// 200 Top active crypto perpetual trading pairs
 const MAJOR_CRYPTO_PAIRS = [
   'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT',
   'DOGEUSDT', 'ADAUSDT', 'AVAXUSDT', 'DOTUSDT', 'LINKUSDT',
@@ -42,13 +59,42 @@ const MAJOR_CRYPTO_PAIRS = [
   'XLMUSDT', 'ATOMUSDT', 'TRXUSDT', 'BCHUSDT', 'ICPUSDT',
   'STXUSDT', 'AAVEUSDT', 'GRTUSDT', 'GALAUSDT', 'DYDXUSDT',
   'ALGOUSDT', 'FTMUSDT', 'SANDUSDT', 'MANAUSDT', 'AXSUSDT',
-  'EOSUSDT', 'THETAUSDT', 'EGLDUSDT', 'NEOUSDT', 'KAVAUSDT'
+  'EOSUSDT', 'THETAUSDT', 'EGLDUSDT', 'NEOUSDT', 'KAVAUSDT',
+  'ROSEUSDT', 'SNXUSDT', 'RUNEUSDT', 'LDOUSDT', 'CRVUSDT',
+  'MKRUSDT', 'COMPUSDT', '1INCHUSDT', 'FLOWUSDT', 'QNTUSDT',
+  'CHZUSDT', 'HOTUSDT', 'ZILUSDT', 'ENJUSDT', 'BATUSDT',
+  'DASHUSDT', 'ZECUSDT', 'XMRUSDT', 'IOTAUSDT', 'ONTUSDT',
+  'QTUMUSDT', 'OMGUSDT', 'ZRXUSDT', 'ICXUSDT', 'KSMUSDT',
+  'WAVESUSDT', 'CELOUSDT', 'YFIUSDT', 'ANKRUSDT', 'STORJUSDT',
+  'SKLUSDT', 'GLMRUSDT', 'MOVRUSDT', 'ASTRUSDT', 'SSVUSDT',
+  'FLRUSDT', 'PENDLEUSDT', 'NOTUSDT', 'RENDERUSDT', 'JUPUSDT',
+  'PYTHUSDT', 'STRKUSDT', 'ENAUSDT', 'WUSDT', 'TNSRUSDT',
+  'OMNIUSDT', 'REZUSDT', 'BBUSDT', 'IOUSDT', 'ZKUSDT',
+  'LISTAUSDT', 'ZROUSDT', 'BLURUSDT', 'IDUSDT', 'EDUUSDT',
+  'ORDIUSDT', 'CYBERUSDT', 'ARKMUSDT', 'AGLDUSDT', 'TRBUSDT',
+  'BIGTIMEUSDT', 'TOKENUSDT', 'STEEMUSDT', 'NTRNUSDT', 'BEAMUSDT',
+  'JTOUSDT', 'ACEUSDT', 'NFPUSDT', 'AIUSDT', 'XAIUSDT',
+  'MANTAUSDT', 'ALTUSDT', 'ZETAUSDT', 'RONINUSDT', 'DYMUSDT',
+  'PIXELUSDT', 'PORTALUSDT', 'PDAUSDT', 'AXLUSDT', 'MYROUSDT',
+  'AEVOUSDT', 'BOMEUSDT', 'ETHFIUSDT', 'SAGAUSDT', 'TURBOUSDT',
+  'BANANAUSDT', 'RAREUSDT', 'SYNUSDT', 'POWRUSDT', 'HOOKUSDT',
+  'MAGICUSDT', 'HIGHUSDT', 'MINAUSDT', 'SYSUSDT', 'CKBUSDT',
+  'SPELLUSDT', 'SUNUSDT', 'DENTUSDT', 'IOTXUSDT', 'SLPUSDT',
+  'TUSDT', 'LRCUSDT', 'WOOUSDT', 'JSTUSDT', 'BANDUSDT',
+  'KNCUSDT', 'API3USDT', 'UMAUSDT', 'RLCUSDT', 'BALUSDT',
+  'RENUSDT', 'BELUSDT', 'CTKUSDT', 'UNFIUSDT', 'ALPHAUSDT',
+  'ZENUSDT', 'AKROUSDT', 'AUDIOUSDT', 'STRAXUSDT', 'OGNUSDT',
+  'REQUSDT', 'CHRUSDT', 'ARDRUSDT', 'COTIUSDT', 'WRXUSDT',
+  'LSKUSDT', 'STPTUSDT', 'DATAUSDT', 'CTSIUSDT', 'HIVEUSDT',
+  'DGBUSDT', 'SXPUSDT', 'BANDUSDT', 'STORJUSDT', 'LRCUSDT'
 ];
 
 async function getTopCoins(limit = 50) {
+  const targetLimit = parseInt(limit) || 50;
   const now = Date.now();
-  if (topCoinsCache && (now - topCoinsCacheTime < CACHE_6_HOURS)) {
-    return topCoinsCache.slice(0, limit);
+
+  if (topCoinsCache && topCoinsCache.length >= targetLimit && (now - topCoinsCacheTime < CACHE_6_HOURS)) {
+    return topCoinsCache.slice(0, targetLimit);
   }
 
   try {
@@ -65,25 +111,29 @@ async function getTopCoins(limit = 50) {
       .sort((a, b) => parseFloat(b.quoteVolume) - parseFloat(a.quoteVolume))
       .map(item => item.symbol);
 
-    // Ensure top 50 strictly contains active crypto perpetuals
     const filteredCrypto = sorted.filter(sym => !['XAUUSDT', 'XAGUSDT', 'CLUSDT', 'SOXLUSDT', 'SNDKUSDT', 'SKHYNIXUSDT', 'MUUSDT', 'BANKUSDT', 'KORUUSDT', 'SKHYUSDT'].includes(sym));
 
-    topCoinsCache = filteredCrypto.length >= limit ? filteredCrypto : MAJOR_CRYPTO_PAIRS;
+    // Map any 1000-prefix symbols back to standard coin names for display (e.g. 1000PEPEUSDT -> PEPEUSDT)
+    const normalized = filteredCrypto.map(s => s.replace(/^1000/, ''));
+    const uniqueCoins = Array.from(new Set(normalized));
+
+    topCoinsCache = uniqueCoins.length >= targetLimit ? uniqueCoins : MAJOR_CRYPTO_PAIRS;
     topCoinsCacheTime = now;
-    console.log(`[BINANCE] Loaded top ${topCoinsCache.length} active crypto perpetual contracts`);
-    return topCoinsCache.slice(0, limit);
+    console.log(`[BINANCE] Loaded top ${targetLimit} active crypto perpetual contracts`);
+    return topCoinsCache.slice(0, targetLimit);
   } catch (error) {
-    console.error('[BINANCE] Error fetching top coins, using fallback list:', error.message);
     topCoinsCache = MAJOR_CRYPTO_PAIRS;
     topCoinsCacheTime = now;
-    return MAJOR_CRYPTO_PAIRS.slice(0, limit);
+    return MAJOR_CRYPTO_PAIRS.slice(0, targetLimit);
   }
 }
 
 async function getCandles(symbol, interval, limit = 300) {
+  const futuresSymbol = getFuturesSymbol(symbol);
+
   // Tier 1: Binance Futures API
   try {
-    const url = `${BASE_URL}/fapi/v1/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
+    const url = `${BASE_URL}/fapi/v1/klines?symbol=${futuresSymbol}&interval=${interval}&limit=${limit}`;
     const raw = await fetchWithRateLimit(url);
     if (Array.isArray(raw) && raw.length > 0) {
       const parsed = raw.map(c => ({
@@ -98,13 +148,13 @@ async function getCandles(symbol, interval, limit = 300) {
       return parsed.slice(0, -1);
     }
   } catch (err) {
-    console.warn(`[CANDLES] Binance Futures fetch failed for ${symbol}: ${err.message}. Trying Binance Spot API fallback...`);
+    // Silent failover to Tier 2
   }
 
   // Tier 2: Binance Spot API Fallback
   try {
-    const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
-    const raw = await fetchWithRateLimit(url);
+    const spotUrl = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
+    const raw = await fetchWithRateLimit(spotUrl);
     if (Array.isArray(raw) && raw.length > 0) {
       const parsed = raw.map(c => ({
         openTime:  c[0],
@@ -118,7 +168,7 @@ async function getCandles(symbol, interval, limit = 300) {
       return parsed.slice(0, -1);
     }
   } catch (err) {
-    console.warn(`[CANDLES] Binance Spot fetch failed for ${symbol}: ${err.message}. Trying Coinbase Public API fallback...`);
+    // Silent failover to Tier 3
   }
 
   // Tier 3: Coinbase Exchange Public API Fallback
@@ -126,14 +176,13 @@ async function getCandles(symbol, interval, limit = 300) {
     const coin = symbol.replace('USDT', '');
     const cbSymbol = `${coin}-USD`;
     const intervalSecMap = {
-      '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 21600, '6h': 21600, '1d': 86400
+      '1m': 60, '5m': 300, '15m': 900, '30m': 1800, '1h': 3600, '2h': 7200, '4h': 21600, '6h': 21600, '12h': 43200, '1d': 86400
     };
     const granularity = intervalSecMap[interval] || 3600;
     const cbUrl = `https://api.exchange.coinbase.com/products/${cbSymbol}/candles?granularity=${granularity}`;
     const response = await axios.get(cbUrl, { timeout: 8000, headers: { 'User-Agent': 'AlgoBot/1.0' } });
 
     if (Array.isArray(response.data) && response.data.length > 0) {
-      // Coinbase format: [time, low, high, open, close, volume]
       const parsed = response.data.map(c => ({
         openTime:  c[0] * 1000,
         open:      parseFloat(c[3]),
@@ -146,7 +195,8 @@ async function getCandles(symbol, interval, limit = 300) {
       return parsed.slice(0, -1);
     }
   } catch (err) {
-    console.error(`[CANDLES] Coinbase fallback failed for ${symbol}: ${err.message}`);
+    // Only log if all fallbacks failed
+    console.error(`[CANDLES] All fallbacks (Futures/Spot/Coinbase) failed for ${symbol}`);
   }
 
   return [];
@@ -158,26 +208,27 @@ async function getFundingRates(symbols = []) {
     const rateMap = {};
     if (Array.isArray(data)) {
       data.forEach(item => {
-        if (symbols.length === 0 || symbols.includes(item.symbol)) {
-          rateMap[item.symbol] = parseFloat(item.lastFundingRate) * 100;
+        const normSym = item.symbol.replace(/^1000/, '');
+        if (symbols.length === 0 || symbols.includes(normSym) || symbols.includes(item.symbol)) {
+          rateMap[normSym] = parseFloat(item.lastFundingRate) * 100;
         }
       });
     }
     return rateMap;
   } catch (error) {
-    console.error('[BINANCE] Error fetching funding rates:', error.message);
     return {};
   }
 }
 
 async function getMaxHistoricalCandles(symbol, interval) {
+  const futuresSymbol = getFuturesSymbol(symbol);
   const allCandles = [];
   let endTime = Date.now();
   const maxBatches = 5;
 
   for (let b = 0; b < maxBatches; b++) {
     try {
-      const url = `${BASE_URL}/fapi/v1/klines?symbol=${symbol}&interval=${interval}&limit=1000&endTime=${endTime}`;
+      const url = `${BASE_URL}/fapi/v1/klines?symbol=${futuresSymbol}&interval=${interval}&limit=1000&endTime=${endTime}`;
       const batch = await fetchWithRateLimit(url);
 
       if (!Array.isArray(batch) || batch.length === 0) break;
@@ -194,9 +245,8 @@ async function getMaxHistoricalCandles(symbol, interval) {
 
       allCandles.unshift(...parsedBatch);
       endTime = parsedBatch[0].openTime - 1;
-      await sleep(200);
+      await sleep(150);
     } catch (e) {
-      console.error(`[BINANCE] Backtest fetch batch failed for ${symbol}:`, e.message);
       break;
     }
   }

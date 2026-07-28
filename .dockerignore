@@ -1,0 +1,7 @@
+.env
+node_modules
+data/algobot.db
+data/logs
+data/backtest_cache
+.git
+*.bat

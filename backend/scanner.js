@@ -7,6 +7,7 @@ const storage = require('./storage');
 const indicators = require('./indicators');
 const websocketManager = require('./websocketManager');
 const { sleep, calculateCandlesOpen, formatUTCDateTime, getSessionBadge } = require('./utils');
+const tradeLogger = require('./tradeLogger');
 
 let coinData = {};
 let scannerState = [];
@@ -47,9 +48,11 @@ async function loadInitialData(coinList, settings) {
 
 function recalculateScannerState() {
   const coinsArr = [];
+  const targetList = (activeCoinList && activeCoinList.length > 0) ? activeCoinList : Object.keys(coinData);
 
-  Object.keys(coinData).forEach(symbol => {
+  targetList.forEach(symbol => {
     const data = coinData[symbol];
+    if (!data) return;
     const candles = data.candles || [];
     if (candles.length < 50) return;
 
@@ -231,6 +234,7 @@ async function handle4GateTrade(symbol, result) {
 
   await storage.saveTrade(trade);
   openTrades.push(trade);
+  tradeLogger.onTradeOpened(trade);
 
   signal.tradeFired = true;
   signal.tradeId = trade.id;
@@ -276,6 +280,7 @@ async function handleWMTrade(symbol, result) {
 
   await storage.saveTrade(trade);
   openTrades.push(trade);
+  tradeLogger.onTradeOpened(trade);
 
   signal.tradeFired = true;
   signal.tradeId = trade.id;
@@ -367,6 +372,7 @@ async function processTPSLAction(trade, action, closePrice) {
     trade.trailingStop = trade.direction === 'LONG' ? closePrice - (currentATR * 1.0) : closePrice + (currentATR * 1.0);
 
     await storage.saveTrade(trade);
+    tradeLogger.onTPHit(trade, 1);
     broadcastFn('TRADE_UPDATE', trade);
     await telegram.sendTPAlert(trade, 1, closePrice, pnl);
 
@@ -382,6 +388,7 @@ async function processTPSLAction(trade, action, closePrice) {
     trade.remainingPct -= closePct;
 
     await storage.saveTrade(trade);
+    tradeLogger.onTPHit(trade, 2);
     broadcastFn('TRADE_UPDATE', trade);
     await telegram.sendTPAlert(trade, 2, closePrice, pnl);
 
@@ -437,6 +444,7 @@ async function finishCloseTrade(trade, exitPrice, outcome) {
 
   openTrades = openTrades.filter(t => t.id !== trade.id);
   await storage.closeTrade(trade);
+  tradeLogger.onTradeClosed(trade);
 
   const signal = await storage.getSignalById(trade.signalId);
   if (signal) {

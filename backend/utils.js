@@ -10,14 +10,17 @@ function formatUTCDateTime(timestamp) {
   if (!timestamp) return 'N/A';
   const d = new Date(timestamp);
   if (isNaN(d.getTime())) return 'N/A';
+  // Convert to Indian Standard Time (IST: UTC + 5:30)
+  const istOffsetMs = (5 * 60 + 30) * 60 * 1000;
+  const istDate = new Date(d.getTime() + istOffsetMs);
   const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-  const day = String(d.getUTCDate()).padStart(2, '0');
-  const month = months[d.getUTCMonth()];
-  const year = d.getUTCFullYear();
-  const hours = String(d.getUTCHours()).padStart(2, '0');
-  const minutes = String(d.getUTCMinutes()).padStart(2, '0');
-  const seconds = String(d.getUTCSeconds()).padStart(2, '0');
-  return `${day}-${month}-${year} ${hours}:${minutes}:${seconds} UTC`;
+  const day = String(istDate.getUTCDate()).padStart(2, '0');
+  const month = months[istDate.getUTCMonth()];
+  const year = istDate.getUTCFullYear();
+  const hours = String(istDate.getUTCHours()).padStart(2, '0');
+  const minutes = String(istDate.getUTCMinutes()).padStart(2, '0');
+  const seconds = String(istDate.getUTCSeconds()).padStart(2, '0');
+  return `${day}-${month}-${year} ${hours}:${minutes}:${seconds} IST`;
 }
 
 function formatUptime(seconds) {

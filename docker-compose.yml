@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  algobot:
+    build: .
+    container_name: algobot
+    ports:
+      - "3000:3000"
+    volumes:
+      # Persist SQLite database and JSON data files across container restarts
+      - algobot-data:/app/data
+      # Mount .env file for secrets
+      - ./.env:/app/.env:ro
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "const http = require('http'); http.get('http://localhost:3000/health', (res) => { process.exit(res.statusCode === 200 ? 0 : 1); }).on('error', () => process.exit(1));"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  algobot-data:
+    driver: local

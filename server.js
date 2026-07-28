@@ -15,6 +15,9 @@ const deltaExchange = require('./backend/deltaExchange');
 const telegram = require('./backend/telegramBot');
 const backtest = require('./backend/backtest');
 const indicators = require('./backend/indicators');
+const tradeLogger = require('./backend/tradeLogger');
+const analytics = require('./backend/analytics');
+const db = require('./backend/db');
 const { formatUTCDateTime, formatUptime } = require('./backend/utils');
 
 const app = express();
@@ -356,39 +359,122 @@ app.get('/api/balance', async (req, res) => {
 
 app.get('/api/analytics', async (req, res) => {
   try {
-    const tradesObj = await storage.loadTrades();
-    const closed = tradesObj.closed || [];
-    const wins = closed.filter(t => t.realizedPnL > 0);
+    const summary = analytics.getSummary();
+    const equityCurve = analytics.getEquityCurve();
+    const byDirection = analytics.getByDirection();
+    const byStrategy = analytics.getByStrategy();
+    const bySymbol = analytics.getBySymbol(10);
+    const streaks = analytics.getStreakAnalysis();
 
     res.json({
-      equityCurve: [
-        { timestamp: formatUTCDateTime(Date.now() - 86400000 * 3), balance: 10000 },
-        { timestamp: formatUTCDateTime(Date.now() - 86400000 * 2), balance: 10180 },
-        { timestamp: formatUTCDateTime(Date.now() - 86400000 * 1), balance: 10340 }
-      ],
-      winLossRatio: { wins: wins.length, losses: closed.length - wins.length, winRate: closed.length > 0 ? (wins.length / closed.length) * 100 : 0 },
-      byDirection: {
-        LONG: { trades: 15, wins: 10, winRate: 66.7, avgPnL: 240 },
-        SHORT: { trades: 10, wins: 6, winRate: 60.0, avgPnL: 180 }
+      equityCurve,
+      winLossRatio: {
+        wins: summary.wins,
+        losses: summary.losses,
+        winRate: summary.winRate
       },
-      byTrigger: {
-        '4-GATE': { trades: 18, wins: 11, winRate: 61.1, avgPnL: 210 },
-        'W-FORMATION': { trades: 5, wins: 4, winRate: 80.0, avgPnL: 380 },
-        'M-FORMATION': { trades: 2, wins: 1, winRate: 50.0, avgPnL: 190 }
-      },
-      topCoins: [
-        { symbol: 'BTCUSDT', trades: 6, winRate: 83.3, totalPnL: 1240 },
-        { symbol: 'ETHUSDT', trades: 4, winRate: 75.0, totalPnL: 680 }
-      ],
-      maxDrawdown: 4.2,
-      sharpeRatio: 1.84,
-      profitFactor: 2.33,
-      avgRR: 2.1,
-      avgTradeDuration: "8.5 hours"
+      byDirection,
+      byTrigger: byStrategy,
+      topCoins: bySymbol.top,
+      bottomCoins: bySymbol.bottom,
+      maxDrawdown: summary.maxDrawdown,
+      sharpeRatio: summary.sharpeRatio,
+      profitFactor: summary.profitFactor,
+      avgRR: summary.avgRR,
+      avgTradeDuration: summary.avgTradeDuration,
+      expectancy: summary.expectancy,
+      bestTrade: summary.bestTrade,
+      worstTrade: summary.worstTrade,
+      totalPnL: summary.totalPnL,
+      totalTrades: summary.totalTrades,
+      streaks
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// Analytics sub-routes
+app.get('/api/analytics/summary', (req, res) => {
+  try {
+    res.json(analytics.getSummary());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/analytics/equity-curve', (req, res) => {
+  try {
+    const days = parseInt(req.query.days) || 90;
+    res.json(analytics.getEquityCurve(days));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/analytics/by-strategy', (req, res) => {
+  try {
+    res.json(analytics.getByStrategy());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/analytics/by-symbol', (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 20;
+    res.json(analytics.getBySymbol(limit));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/analytics/by-direction', (req, res) => {
+  try {
+    res.json(analytics.getByDirection());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/analytics/recent', (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 20;
+    res.json(analytics.getRecentTrades(limit));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/analytics/events', (req, res) => {
+  try {
+    const { type } = req.query;
+    const limit = parseInt(req.query.limit) || 50;
+    res.json(analytics.getBotEvents(type || null, limit));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/analytics/streaks', (req, res) => {
+  try {
+    res.json(analytics.getStreakAnalysis());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Health endpoint for uptime monitoring
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    uptime: process.uptime(),
+    uptimeFormatted: formatUptime(process.uptime()),
+    timestamp: new Date().toISOString(),
+    memory: process.memoryUsage(),
+    scannerRunning: scanner.isRunning(),
+    dbConnected: !!db.getDb()
+  });
 });
 
 app.get('/api/candles', async (req, res) => {
@@ -468,13 +554,20 @@ async function applySettingsUpdate(newSettings) {
   }
 
   const timeframeChanged = newSettings.timeframe && newSettings.timeframe !== currentSettings.timeframe;
-  const scanCoinsChanged = newSettings.scanCoins && newSettings.scanCoins !== currentSettings.scanCoins;
+  const newScanCoins = parseInt(newSettings.scanCoins);
+  const currentScanCoins = parseInt(currentSettings.scanCoins || 50);
+  const scanCoinsChanged = !isNaN(newScanCoins) && newScanCoins !== currentScanCoins;
 
-  const updated = await storage.saveSettings(newSettings);
+  const updated = await storage.saveSettings({
+    ...newSettings,
+    scanCoins: !isNaN(newScanCoins) ? newScanCoins : currentScanCoins
+  });
+
+  const numCoins = parseInt(updated.scanCoins) || 50;
 
   if (timeframeChanged || scanCoinsChanged) {
-    console.log(`[SETTINGS UPDATE] Syncing backend engine -> TF: ${updated.timeframe}, Coins: ${updated.scanCoins || 50}`);
-    const coinList = await binanceData.getTopCoins(updated.scanCoins || 50);
+    console.log(`[SETTINGS UPDATE] Syncing backend engine -> TF: ${updated.timeframe}, Coins: ${numCoins}`);
+    const coinList = await binanceData.getTopCoins(numCoins);
 
     websocketManager.startPriceStream(coinList, (symbol, price) => scanner.onPriceTick(symbol, price));
     websocketManager.restartKlineStream(coinList, updated.timeframe || '4h', (sym, closeTime) => {
@@ -636,6 +729,10 @@ async function main() {
   await storage.initialize();
   console.log('[✅] Storage initialized');
 
+  // Initialize SQLite persistence layer
+  tradeLogger.init();
+  console.log('[✅] SQLite trade logger initialized');
+
   const settings = await storage.loadSettings();
   console.log('[✅] Settings loaded — TF: ' + settings.timeframe + ' | Exchange: ' + settings.exchange);
 
@@ -692,12 +789,14 @@ main().catch(err => {
 process.on('SIGTERM', async () => {
   console.log('[SHUTDOWN] Saving state...');
   await storage.saveTrades({ open: scanner.getOpenTrades(), closed: [] });
+  db.closeDb();
   process.exit(0);
 });
 
 process.on('SIGINT', async () => {
   console.log('[SHUTDOWN] Ctrl+C detected — saving state...');
   await storage.saveTrades({ open: scanner.getOpenTrades(), closed: [] });
+  db.closeDb();
   process.exit(0);
 });
 

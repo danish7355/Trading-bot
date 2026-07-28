@@ -1,8 +1,8 @@
 {
   "exchange": "binance",
-  "deltaMode": "testnet",
+  "deltaMode": "live",
   "timeframe": "1h",
-  "scanCoins": 100,
+  "scanCoins": 120,
   "scanInterval": 30,
   "autoTradeEnabled": true,
   "autoTradePaused": false,

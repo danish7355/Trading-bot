@@ -1,0 +1,9 @@
+node_modules/
+.env
+data/algobot.db
+data/algobot.db-shm
+data/algobot.db-wal
+data/logs/
+data/backtest_cache/
+*.log
+.DS_Store
