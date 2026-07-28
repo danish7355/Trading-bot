@@ -1,22 +1,58 @@
 /**
  * SQLite Database Module — Persistent Trade & Event Storage
- * 
+ *
  * Uses better-sqlite3 for synchronous, zero-config local persistence.
  * This runs ALONGSIDE the existing JSON storage — not a replacement.
  * All existing trade logic remains unchanged.
+ *
+ * IMPORTANT: better-sqlite3 is optional. If it fails to load (e.g. on
+ * Render's free tier Linux environment), the bot continues in JSON-only
+ * mode with no crash. SQLite features are simply disabled.
  */
 
 const path = require('path');
 const fs = require('fs');
+const { spawnSync } = require('child_process');
 
 const DB_DIR = path.join(__dirname, '..', 'data');
 const DB_PATH = path.join(DB_DIR, 'algobot.db');
 
 let db = null;
+let sqliteAvailable = null; // null = untested, true = ok, false = unavailable
+
+/**
+ * Use a child process to safely probe whether better-sqlite3 works on this
+ * platform. A segfault (exit code 139) in the child won't kill the main process.
+ */
+function isSqliteAvailable() {
+  if (sqliteAvailable !== null) return sqliteAvailable;
+
+  try {
+    // Quick probe: try to require better-sqlite3 in a throw-away child process
+    const result = spawnSync(process.execPath, [
+      '-e',
+      'require("better-sqlite3"); process.exit(0);'
+    ], { timeout: 8000, encoding: 'utf8' });
+
+    if (result.status === 0) {
+      sqliteAvailable = true;
+      console.log('[DB] better-sqlite3 probe passed — SQLite enabled');
+    } else {
+      sqliteAvailable = false;
+      console.warn(`[DB] better-sqlite3 probe failed (exit ${result.status}) — running in JSON-only mode`);
+    }
+  } catch (err) {
+    sqliteAvailable = false;
+    console.warn('[DB] better-sqlite3 probe error — running in JSON-only mode:', err.message);
+  }
+
+  return sqliteAvailable;
+}
 
 function getDb() {
   if (db) return db;
-  
+  if (!isSqliteAvailable()) return null;
+
   // Ensure data directory exists
   if (!fs.existsSync(DB_DIR)) {
     fs.mkdirSync(DB_DIR, { recursive: true });
@@ -25,15 +61,16 @@ function getDb() {
   try {
     const Database = require('better-sqlite3');
     db = new Database(DB_PATH, { verbose: null });
-    
+
     // Enable WAL mode for better concurrent read performance
     db.pragma('journal_mode = WAL');
     db.pragma('busy_timeout = 5000');
-    
+
     console.log('[DB] SQLite connected at', DB_PATH);
     return db;
   } catch (err) {
     console.error('[DB] Failed to initialize SQLite:', err.message);
+    sqliteAvailable = false;
     return null;
   }
 }
