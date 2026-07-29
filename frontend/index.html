@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>AlgoBot — Crypto Algo Trading Terminal</title>
+  <title>AlgoBot — Algo Trading Terminal</title>
   <link rel="stylesheet" href="styles.css">
   <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
 </head>
@@ -17,7 +17,7 @@
   <!-- TOP BAR -->
   <div id="top-bar">
     <div class="logo">🤖 AlgoBot</div>
-    
+
     <div id="exchange-badge" class="badge">[BINANCE]</div>
     <div id="mode-badge" class="badge badge-paper">[PAPER]</div>
 
@@ -42,22 +42,30 @@
       <button class="tf-btn" data-tf="1d">1D</button>
     </div>
 
-    <div class="stat">Scan: <span id="last-scan-time">--:--:--</span></div>
+    <!-- Issue 1: scan heartbeat indicator -->
+    <div class="stat">
+      Scan: <span id="last-scan-time">--:--:--</span>
+      <span id="scan-heartbeat-badge" class="badge badge-hb-pending" title="Auto-scan heartbeat">⏳</span>
+    </div>
     <div id="connection-status" class="connection-badge status-connecting">⏳ Connecting...</div>
   </div>
 
   <!-- MAIN NAVIGATION TABS -->
   <nav id="main-nav">
-    <button class="tab-btn active" data-tab="scanner">📡 Scanner</button>
+    <button class="tab-btn active" data-tab="scanner">📡 Crypto Futures</button>
+    <button class="tab-btn" data-tab="tradelog">📋 Trade Log</button>
     <button class="tab-btn" data-tab="signals">📈 Signals</button>
     <button class="tab-btn" data-tab="backtest">⏪ Backtest</button>
     <button class="tab-btn" data-tab="analytics">📊 Analytics</button>
-    <a href="/dashboard.html" target="_blank" class="tab-btn" style="text-decoration:none; display:inline-flex; align-items:center;">🚀 Full Dashboard</a>
+    <button class="tab-btn" data-tab="nse">🇮🇳 NSE India</button>
+    <button class="tab-btn" data-tab="commodities">🥇 Commodities</button>
+    <button class="tab-btn" data-tab="nasdaq">📈 NASDAQ</button>
+    <a href="/dashboard.html" target="_blank" class="tab-btn" style="text-decoration:none;display:inline-flex;align-items:center;">🚀 Dashboard</a>
     <button class="tab-btn" data-tab="settings">⚙️ Settings</button>
     <button class="tab-btn" data-tab="debug">🛠 Debug</button>
   </nav>
 
-  <!-- TAB 1: SCANNER -->
+  <!-- TAB 1: CRYPTO FUTURES SCANNER -->
   <div id="tab-scanner" class="tab-content active">
     <div id="scanner-filters">
       <input id="search-coin" placeholder="🔍 Search coin...">
@@ -77,7 +85,15 @@
         <option value="Strong (70+)">Strong (70+)</option>
       </select>
       <button class="action-btn" onclick="triggerScanNow()">⚡ SCAN NOW</button>
-      <button class="action-btn" onclick="fireTestTradeFromUI()" style="background:var(--green); color:#000;">⚡ FIRE TEST TRADE</button>
+      <button class="action-btn" onclick="fireTestTradeFromUI()" style="background:var(--green);color:#000;">⚡ FIRE TEST TRADE</button>
+    </div>
+
+    <!-- Issue 1: scan heartbeat bar -->
+    <div id="scan-status-bar" style="padding:6px 12px;background:var(--bg-surface2);border-bottom:1px solid var(--border);font-size:0.82rem;display:flex;gap:16px;align-items:center;">
+      <span>Crypto Auto-Scan:</span>
+      <span id="hb-crypto-status" class="badge badge-hb-pending">⏳ Pending</span>
+      <span id="hb-crypto-time" class="dim">Last: —</span>
+      <span id="hb-crypto-duration" class="dim"></span>
     </div>
 
     <div id="scanner-table-wrapper">
@@ -91,49 +107,72 @@
             <th data-column="score">Score</th>
             <th>Dir</th>
             <th>Status</th>
-            <th>EMA9</th>
-            <th>EMA55</th>
-            <th>Trend</th>
-            <th>ADX</th>
-            <th>RSI</th>
-            <th>Vol</th>
-            <th>Funding</th>
-            <th>G1</th>
-            <th>G2</th>
-            <th>G3</th>
-            <th>G4</th>
-            <th>W/M</th>
-            <th>Chart</th>
+            <th>EMA9</th><th>EMA55</th><th>Trend</th>
+            <th>ADX</th><th>RSI</th><th>Vol</th><th>Funding</th>
+            <th>G1</th><th>G2</th><th>G3</th><th>G4</th>
+            <th>W/M</th><th>Chart</th>
           </tr>
         </thead>
-        <tbody id="scanner-tbody">
-          <!-- Dynamically populated -->
-        </tbody>
+        <tbody id="scanner-tbody"></tbody>
       </table>
     </div>
 
-    <!-- Ranging Section -->
     <div id="ranging-section">
       <div id="ranging-header" onclick="toggleRanging()">
         🟠 Ranging Markets (<span id="ranging-count">0</span> coins) ▼
       </div>
       <div id="ranging-table-wrapper" style="display:none">
-        <table id="ranging-table">
-          <tbody id="ranging-tbody"></tbody>
-        </table>
+        <table id="ranging-table"><tbody id="ranging-tbody"></tbody></table>
       </div>
     </div>
 
-    <!-- Active Positions Panel -->
     <div id="active-positions" style="display:none">
       <h3>🔴 Active Positions (<span id="positions-count">0</span>)</h3>
-      <div id="positions-grid">
-        <!-- Trade cards added dynamically -->
-      </div>
+      <div id="positions-grid"></div>
     </div>
   </div>
 
-  <!-- TAB 2: SIGNALS -->
+  <!-- TAB 2: TRADE LOG (Issue 3) -->
+  <div id="tab-tradelog" class="tab-content">
+    <div style="display:flex;gap:12px;align-items:center;padding:10px 0;">
+      <h3 style="margin:0;">📋 Trade Log</h3>
+      <button class="action-btn" onclick="loadTradeLog()">🔄 Refresh</button>
+      <button class="action-btn" onclick="exportTradeLogCSV()">📥 Export CSV</button>
+    </div>
+
+    <div id="tradelog-summary" style="display:flex;gap:16px;padding:8px 0;font-size:0.85rem;color:var(--text-dim);">
+      Total: <strong id="tl-total">0</strong>
+      Open: <strong id="tl-open">0</strong>
+      Closed: <strong id="tl-closed">0</strong>
+    </div>
+
+    <div style="overflow-x:auto;">
+      <table id="tradelog-table" style="width:100%;font-size:0.8rem;">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Symbol</th>
+            <th>Dir</th>
+            <th>TF Used</th>
+            <th>Trigger</th>
+            <th>Gates</th>
+            <th>Score</th>
+            <th>Entry $</th>
+            <th>Entry Time (UTC)</th>
+            <th>Exit $</th>
+            <th>Exit Time (UTC)</th>
+            <th>Exit Reason</th>
+            <th>P&L $</th>
+            <th>P&L %</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody id="tradelog-tbody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- TAB 3: SIGNALS -->
   <div id="tab-signals" class="tab-content">
     <div id="signals-filters">
       <input id="signal-search" placeholder="🔍 Search coin...">
@@ -152,7 +191,7 @@
       <button class="action-btn" onclick="exportSignalsCSV()">📥 Export CSV</button>
     </div>
 
-    <div id="signals-summary" style="margin-bottom:10px; font-weight:bold;">
+    <div id="signals-summary" style="margin-bottom:10px;font-weight:bold;">
       Total: 0 | Fired: 0 | Skipped: 0 | Win Rate: 0% | Avg P&L: $0.00
     </div>
 
@@ -160,31 +199,17 @@
       <table id="signals-table">
         <thead>
           <tr>
-            <th>#</th>
-            <th>Signal Time (UTC)</th>
-            <th>Entry Time (UTC)</th>
-            <th>Exch</th>
-            <th>Coin</th>
-            <th>TF</th>
-            <th>Cross</th>
-            <th>EMA9</th><th>EMA55</th><th>EMA200</th>
-            <th>Price</th>
+            <th>#</th><th>Signal Time (UTC)</th><th>Entry Time (UTC)</th>
+            <th>Exch</th><th>Coin</th><th>TF</th><th>Cross</th>
+            <th>EMA9</th><th>EMA55</th><th>EMA200</th><th>Price</th>
             <th>ADX</th><th>RSI</th><th>Vol×</th>
             <th>G1</th><th>G2</th><th>G3</th><th>G4</th>
-            <th>W/M</th>
-            <th>Trade</th>
-            <th>Score</th>
-            <th>Entry $</th>
-            <th>Exit $</th>
-            <th>Exit Time (UTC)</th>
-            <th>Outcome</th>
-            <th>P&L $</th>
-            <th>P&L %</th>
+            <th>W/M</th><th>Trade</th><th>Score</th>
+            <th>Entry $</th><th>Exit $</th><th>Exit Time (UTC)</th>
+            <th>Outcome</th><th>P&L $</th><th>P&L %</th>
           </tr>
         </thead>
-        <tbody id="signals-tbody">
-          <!-- Dynamically populated -->
-        </tbody>
+        <tbody id="signals-tbody"></tbody>
       </table>
     </div>
 
@@ -194,21 +219,14 @@
     </div>
   </div>
 
-  <!-- TAB 3: BACKTEST -->
+  <!-- TAB 4: BACKTEST -->
   <div id="tab-backtest" class="tab-content">
-    <div class="settings-card" style="max-width: 600px; margin-bottom: 20px;">
+    <div class="settings-card" style="max-width:600px;margin-bottom:20px;">
       <h3>⏪ Backtest Simulation Engine</h3>
-      <div class="form-group">
-        <label>Coin Symbol</label>
-        <input id="bt-symbol" value="BTCUSDT">
-      </div>
+      <div class="form-group"><label>Coin Symbol</label><input id="bt-symbol" value="BTCUSDT"></div>
       <div class="form-group">
         <label>Timeframe</label>
-        <select id="bt-tf">
-          <option value="4h" selected>4h</option>
-          <option value="1h">1h</option>
-          <option value="15m">15m</option>
-        </select>
+        <select id="bt-tf"><option value="4h" selected>4h</option><option value="1h">1h</option><option value="15m">15m</option></select>
       </div>
       <div class="form-group">
         <label>Strategy Mode</label>
@@ -220,21 +238,19 @@
       </div>
       <button class="action-btn" onclick="runBacktestJob()">▶ RUN BACKTEST</button>
     </div>
-
-    <div id="bt-progress-wrapper" style="display:none; margin-bottom:20px;">
+    <div id="bt-progress-wrapper" style="display:none;margin-bottom:20px;">
       <div id="bt-progress-status">Running backtest...</div>
-      <div style="background:var(--bg-surface2); border:1px solid var(--border); height:15px; border-radius:8px; overflow:hidden;">
-        <div id="bt-progress-bar" style="width:0%; background:var(--blue); height:100%;"></div>
+      <div style="background:var(--bg-surface2);border:1px solid var(--border);height:15px;border-radius:8px;overflow:hidden;">
+        <div id="bt-progress-bar" style="width:0%;background:var(--blue);height:100%;"></div>
       </div>
     </div>
-
     <div id="bt-results" style="display:none">
       <h3>Results Summary</h3>
       <div class="settings-grid" id="bt-summary-grid" style="margin-top:15px;"></div>
     </div>
   </div>
 
-  <!-- TAB 4: ANALYTICS -->
+  <!-- TAB 5: ANALYTICS -->
   <div id="tab-analytics" class="tab-content">
     <h3>📊 Performance Analytics</h3>
     <div class="settings-grid" style="margin-top:15px;">
@@ -259,33 +275,109 @@
     </div>
   </div>
 
-  <!-- TAB 5: SETTINGS -->
+  <!-- TAB 6: NSE INDIA -->
+  <div id="tab-nse" class="tab-content">
+    <div id="nse-status-bar" class="market-status-bar">
+      <span>🇮🇳 NSE India Auto-Scan (Daily):</span>
+      <span id="hb-nse-status" class="badge badge-hb-pending">⏳ Pending</span>
+      <span id="hb-nse-time" class="dim">Last: —</span>
+      <button class="action-btn" onclick="triggerMarketScan('nse')" style="padding:3px 10px;font-size:0.8rem;">⚡ Scan Now</button>
+    </div>
+    <div id="nse-stats" class="market-stats-row">
+      <span>Symbols: <strong id="nse-coin-count">30</strong></span>
+      <span>Ready: <strong id="nse-ready-count" class="green">0</strong></span>
+      <span>Open Trades: <strong id="nse-trades-count">0</strong></span>
+    </div>
+    <div style="overflow-x:auto;">
+      <table class="market-table">
+        <thead><tr>
+          <th>#</th><th>Symbol</th><th>Price</th><th>Chg%</th><th>Score</th><th>Dir</th>
+          <th>EMA9</th><th>EMA55</th><th>Trend</th><th>ADX</th><th>RSI</th><th>Vol×</th>
+          <th>G1</th><th>G2</th><th>G3</th><th>G4</th><th>Status</th>
+        </tr></thead>
+        <tbody id="nse-tbody"></tbody>
+      </table>
+    </div>
+    <div id="nse-positions" style="display:none;margin-top:16px;">
+      <h4>🔴 NSE Active Positions (<span id="nse-positions-count">0</span>)</h4>
+      <div id="nse-positions-grid"></div>
+    </div>
+  </div>
+
+  <!-- TAB 7: COMMODITIES -->
+  <div id="tab-commodities" class="tab-content">
+    <div id="commodities-status-bar" class="market-status-bar">
+      <span>🥇 Commodities Auto-Scan (Daily):</span>
+      <span id="hb-commodities-status" class="badge badge-hb-pending">⏳ Pending</span>
+      <span id="hb-commodities-time" class="dim">Last: —</span>
+      <button class="action-btn" onclick="triggerMarketScan('commodities')" style="padding:3px 10px;font-size:0.8rem;">⚡ Scan Now</button>
+    </div>
+    <div id="commodities-stats" class="market-stats-row">
+      <span>Symbols: <strong id="commodities-coin-count">7</strong></span>
+      <span>Ready: <strong id="commodities-ready-count" class="green">0</strong></span>
+      <span>Open Trades: <strong id="commodities-trades-count">0</strong></span>
+    </div>
+    <div style="overflow-x:auto;">
+      <table class="market-table">
+        <thead><tr>
+          <th>#</th><th>Symbol</th><th>Price</th><th>Chg%</th><th>Score</th><th>Dir</th>
+          <th>EMA9</th><th>EMA55</th><th>Trend</th><th>ADX</th><th>RSI</th><th>Vol×</th>
+          <th>G1</th><th>G2</th><th>G3</th><th>G4</th><th>Status</th>
+        </tr></thead>
+        <tbody id="commodities-tbody"></tbody>
+      </table>
+    </div>
+    <div id="commodities-positions" style="display:none;margin-top:16px;">
+      <h4>🔴 Commodities Active Positions (<span id="commodities-positions-count">0</span>)</h4>
+      <div id="commodities-positions-grid"></div>
+    </div>
+  </div>
+
+  <!-- TAB 8: NASDAQ -->
+  <div id="tab-nasdaq" class="tab-content">
+    <div id="nasdaq-status-bar" class="market-status-bar">
+      <span>📈 NASDAQ Auto-Scan (Daily):</span>
+      <span id="hb-nasdaq-status" class="badge badge-hb-pending">⏳ Pending</span>
+      <span id="hb-nasdaq-time" class="dim">Last: —</span>
+      <button class="action-btn" onclick="triggerMarketScan('nasdaq')" style="padding:3px 10px;font-size:0.8rem;">⚡ Scan Now</button>
+    </div>
+    <div id="nasdaq-stats" class="market-stats-row">
+      <span>Symbols: <strong id="nasdaq-coin-count">30</strong></span>
+      <span>Ready: <strong id="nasdaq-ready-count" class="green">0</strong></span>
+      <span>Open Trades: <strong id="nasdaq-trades-count">0</strong></span>
+    </div>
+    <div style="overflow-x:auto;">
+      <table class="market-table">
+        <thead><tr>
+          <th>#</th><th>Symbol</th><th>Price</th><th>Chg%</th><th>Score</th><th>Dir</th>
+          <th>EMA9</th><th>EMA55</th><th>Trend</th><th>ADX</th><th>RSI</th><th>Vol×</th>
+          <th>G1</th><th>G2</th><th>G3</th><th>G4</th><th>Status</th>
+        </tr></thead>
+        <tbody id="nasdaq-tbody"></tbody>
+      </table>
+    </div>
+    <div id="nasdaq-positions" style="display:none;margin-top:16px;">
+      <h4>🔴 NASDAQ Active Positions (<span id="nasdaq-positions-count">0</span>)</h4>
+      <div id="nasdaq-positions-grid"></div>
+    </div>
+  </div>
+
+  <!-- TAB 9: SETTINGS -->
   <div id="tab-settings" class="tab-content">
     <div class="settings-grid">
-      
-      <!-- GENERAL -->
       <div class="settings-card">
         <h3>General Configuration</h3>
-        <div class="form-group">
-          <label>Auto-Trade Enabled</label>
-          <input type="checkbox" id="set-autotrade" checked>
-        </div>
+        <div class="form-group"><label>Auto-Trade Enabled</label><input type="checkbox" id="set-autotrade" checked></div>
         <div class="form-group">
           <label>Timeframe</label>
           <select id="set-timeframe">
-            <option value="15m">15m</option>
-            <option value="1h">1h</option>
-            <option value="4h" selected>4h</option>
-            <option value="1d">1d</option>
+            <option value="15m">15m</option><option value="1h">1h</option>
+            <option value="4h" selected>4h</option><option value="1d">1d</option>
           </select>
         </div>
-        <div class="form-group">
-          <label>Scan Coins Count</label>
-          <input type="number" id="set-scancoins" value="50">
-        </div>
+        <div class="form-group"><label>Scan Coins Count</label><input type="number" id="set-scancoins" value="50"></div>
       </div>
 
-      <!-- EXCHANGE -->
       <div class="settings-card">
         <h3>Exchange Settings</h3>
         <div class="form-group">
@@ -305,72 +397,50 @@
         <button id="delta-live-btn" class="close-btn" style="background:var(--red);">ENABLE LIVE TRADING</button>
       </div>
 
-      <!-- TRADE MANAGEMENT -->
       <div class="settings-card">
-        <h3>Risk & Execution</h3>
-        <div class="form-group">
-          <label>Position Size (% of Balance)</label>
-          <input type="number" id="set-possize" value="5">
-        </div>
-        <div class="form-group">
-          <label>Leverage (1-20x)</label>
-          <input type="number" id="set-leverage" value="10">
-        </div>
-        <div class="form-group">
-          <label>Max Concurrent Trades</label>
-          <input type="number" id="set-maxtrades" value="3">
-        </div>
+        <h3>Risk &amp; Execution</h3>
+        <div class="form-group"><label>Position Size (% of Balance)</label><input type="number" id="set-possize" value="5"></div>
+        <div class="form-group"><label>Leverage (1-20x)</label><input type="number" id="set-leverage" value="10"></div>
+        <div class="form-group"><label>Max Concurrent Trades</label><input type="number" id="set-maxtrades" value="3"></div>
         <button class="action-btn" id="reset-balance">Reset Demo Balance ($10k)</button>
       </div>
 
-      <!-- TELEGRAM -->
       <div class="settings-card">
         <h3>Telegram Alerts</h3>
-        <div class="form-group">
-          <label>Bot Token</label>
-          <input type="password" id="set-tgtoken" placeholder="Bot Token">
-        </div>
-        <div class="form-group">
-          <label>Chat ID</label>
-          <input id="set-tgchatid" placeholder="Chat ID">
-        </div>
+        <div class="form-group"><label>Bot Token</label><input type="password" id="set-tgtoken" placeholder="Bot Token"></div>
+        <div class="form-group"><label>Chat ID</label><input id="set-tgchatid" placeholder="Chat ID"></div>
         <button class="action-btn" id="test-telegram">Send Test Alert</button>
       </div>
-
     </div>
 
     <div style="margin-top:20px;">
-      <button class="action-btn" id="save-settings" style="font-size:1.1rem; padding:12px 24px;">💾 SAVE SETTINGS</button>
+      <button class="action-btn" id="save-settings" style="font-size:1.1rem;padding:12px 24px;">💾 SAVE SETTINGS</button>
     </div>
   </div>
 
-  <!-- TAB 6: DEBUG -->
+  <!-- TAB 10: DEBUG -->
   <div id="tab-debug" class="tab-content">
     <div class="settings-grid">
-      
       <div class="settings-card">
         <h3>SECTION 1 — API CONNECTIVITY</h3>
         <button class="action-btn" onclick="runAPITest()">Test All APIs</button>
-        <div id="api-test-results" style="margin-top:10px; font-family:monospace;"></div>
+        <div id="api-test-results" style="margin-top:10px;font-family:monospace;"></div>
       </div>
-
+      <div class="settings-card">
+        <h3>SECTION 2 — SCAN HEARTBEAT</h3>
+        <button class="action-btn" onclick="loadHeartbeatDebug()">Check Heartbeat</button>
+        <div id="heartbeat-debug-results" style="margin-top:10px;font-family:monospace;font-size:0.8rem;"></div>
+      </div>
       <div class="settings-card">
         <h3>SECTION 5 — FORCE TEST TRADE</h3>
-        <div class="form-group">
-          <label>Symbol</label>
-          <input id="test-trade-symbol" value="BTCUSDT">
-        </div>
+        <div class="form-group"><label>Symbol</label><input id="test-trade-symbol" value="BTCUSDT"></div>
         <div class="form-group">
           <label>Direction</label>
-          <select id="test-trade-direction">
-            <option value="LONG">LONG</option>
-            <option value="SHORT">SHORT</option>
-          </select>
+          <select id="test-trade-direction"><option value="LONG">LONG</option><option value="SHORT">SHORT</option></select>
         </div>
         <button class="action-btn" onclick="fireTestTrade()">▶ FIRE TEST TRADE</button>
-        <div id="test-trade-result" style="margin-top:10px; font-family:monospace; font-size:0.8rem;"></div>
+        <div id="test-trade-result" style="margin-top:10px;font-family:monospace;font-size:0.8rem;"></div>
       </div>
-
     </div>
   </div>
 

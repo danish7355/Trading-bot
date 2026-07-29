@@ -1,11 +1,11 @@
 const fs = require('fs').promises;
 const path = require('path');
 
-const DATA_DIR = path.join(__dirname, '..', 'data');
-const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json');
-const TRADES_FILE = path.join(DATA_DIR, 'trades.json');
-const SIGNALS_FILE = path.join(DATA_DIR, 'signals.json');
-const POSITIONS_FILE = path.join(DATA_DIR, 'positions.json');
+const DATA_DIR          = path.join(__dirname, '..', 'data');
+const SETTINGS_FILE     = path.join(DATA_DIR, 'settings.json');
+const TRADES_FILE       = path.join(DATA_DIR, 'trades.json');
+const SIGNALS_FILE      = path.join(DATA_DIR, 'signals.json');
+const POSITIONS_FILE    = path.join(DATA_DIR, 'positions.json');
 const BACKTEST_CACHE_DIR = path.join(DATA_DIR, 'backtest_cache');
 
 const DEFAULT_SETTINGS = {
@@ -52,7 +52,7 @@ const DEFAULT_SETTINGS = {
   demoBalance: 10000,
   telegram: {
     botToken: process.env.TELEGRAM_BOT_TOKEN || "",
-    chatId: process.env.TELEGRAM_CHAT_ID || "",
+    chatId:   process.env.TELEGRAM_CHAT_ID   || "",
     alerts: {
       signalDetected: true,
       wmReady: true,
@@ -63,6 +63,8 @@ const DEFAULT_SETTINGS = {
       tp3Hit: true,
       slHit: true,
       trailingMoved: true,
+      trailingHit: true,
+      manualClose: true,
       timeExit: true,
       dailyLimit: true,
       ranging: true,
@@ -74,36 +76,20 @@ const DEFAULT_SETTINGS = {
 };
 
 const DEFAULT_TRADES = {
-  open: [],
-  closed: [],
-  demoBalance: 10000,
+  open: [], closed: [], demoBalance: 10000,
   realizedPnLToday: 0,
   lastResetDate: new Date().toISOString().split('T')[0]
 };
-
-const DEFAULT_SIGNALS = {
-  signals: []
-};
-
-const DEFAULT_POSITIONS = {
-  lastUpdated: Date.now(),
-  coins: []
-};
+const DEFAULT_SIGNALS  = { signals: [] };
+const DEFAULT_POSITIONS = { lastUpdated: Date.now(), coins: [] };
 
 async function ensureDir(dirPath) {
-  try {
-    await fs.mkdir(dirPath, { recursive: true });
-  } catch (e) {
-    // Ignore if exists
-  }
+  try { await fs.mkdir(dirPath, { recursive: true }); } catch (e) {}
 }
 
 async function ensureFile(filePath, defaultData) {
-  try {
-    await fs.access(filePath);
-  } catch {
-    await fs.writeFile(filePath, JSON.stringify(defaultData, null, 2), 'utf-8');
-  }
+  try { await fs.access(filePath); }
+  catch { await fs.writeFile(filePath, JSON.stringify(defaultData, null, 2), 'utf-8'); }
 }
 
 async function initialize() {
@@ -136,66 +122,95 @@ async function writeJSON(filePath, data) {
 }
 
 async function loadSettings() {
-  const settings = await readJSON(SETTINGS_FILE, DEFAULT_SETTINGS);
-  return { ...DEFAULT_SETTINGS, ...settings };
+  const saved = await readJSON(SETTINGS_FILE, DEFAULT_SETTINGS);
+
+  // Shallow-merge top-level keys
+  const merged = { ...DEFAULT_SETTINGS, ...saved };
+
+  // Deep-merge nested objects so partial saves don't wipe sub-keys
+  merged.ema         = { ...DEFAULT_SETTINGS.ema,         ...(saved.ema         || {}) };
+  merged.rsi         = { ...DEFAULT_SETTINGS.rsi,         ...(saved.rsi         || {}) };
+  merged.adx         = { ...DEFAULT_SETTINGS.adx,         ...(saved.adx         || {}) };
+  merged.volume      = { ...DEFAULT_SETTINGS.volume,      ...(saved.volume      || {}) };
+  merged.macd        = { ...DEFAULT_SETTINGS.macd,        ...(saved.macd        || {}) };
+  merged.supertrend  = { ...DEFAULT_SETTINGS.supertrend,  ...(saved.supertrend  || {}) };
+  merged.fibonacci   = { ...DEFAULT_SETTINGS.fibonacci,   ...(saved.fibonacci   || {}) };
+  merged.sr          = { ...DEFAULT_SETTINGS.sr,          ...(saved.sr          || {}) };
+  merged.trade       = { ...DEFAULT_SETTINGS.trade,       ...(saved.trade       || {}) };
+  merged.wm          = { ...DEFAULT_SETTINGS.wm,          ...(saved.wm          || {}) };
+
+  // Critical: deep-merge telegram so alerts sub-object is always fully populated
+  const savedTg = saved.telegram || {};
+  merged.telegram = {
+    ...DEFAULT_SETTINGS.telegram,
+    ...savedTg,
+    alerts: {
+      ...DEFAULT_SETTINGS.telegram.alerts,   // start with all defaults = true
+      ...(savedTg.alerts || {})             // apply any explicit user overrides
+    }
+  };
+  // If no token in saved but env has one, use env
+  if (!merged.telegram.botToken) merged.telegram.botToken = process.env.TELEGRAM_BOT_TOKEN || '';
+  if (!merged.telegram.chatId)   merged.telegram.chatId   = process.env.TELEGRAM_CHAT_ID   || '';
+
+  return merged;
 }
 
 async function saveSettings(newSettings) {
   const current = await loadSettings();
-  const updated = { ...current, ...newSettings };
+  // Deep-merge trade and telegram sub-objects
+  const updated = {
+    ...current,
+    ...newSettings,
+    trade: {
+      ...current.trade,
+      ...(newSettings.trade || {})
+    },
+    telegram: {
+      ...current.telegram,
+      ...(newSettings.telegram || {}),
+      alerts: {
+        ...current.telegram.alerts,
+        ...((newSettings.telegram && newSettings.telegram.alerts) || {})
+      }
+    }
+  };
   await writeJSON(SETTINGS_FILE, updated);
   return updated;
 }
 
-async function loadTrades() {
-  return await readJSON(TRADES_FILE, DEFAULT_TRADES);
-}
-
-async function saveTrades(tradesObj) {
-  return await writeJSON(TRADES_FILE, tradesObj);
-}
+async function loadTrades()          { return await readJSON(TRADES_FILE, DEFAULT_TRADES); }
+async function saveTrades(tradesObj) { return await writeJSON(TRADES_FILE, tradesObj); }
 
 async function saveTrade(trade) {
   const tradesObj = await loadTrades();
   const idx = tradesObj.open.findIndex(t => t.id === trade.id);
-  if (idx >= 0) {
-    tradesObj.open[idx] = trade;
-  } else {
-    tradesObj.open.push(trade);
-  }
+  if (idx >= 0) tradesObj.open[idx] = trade;
+  else tradesObj.open.push(trade);
   await saveTrades(tradesObj);
 }
 
 async function closeTrade(closedTrade) {
   const tradesObj = await loadTrades();
-  tradesObj.open = tradesObj.open.filter(t => t.id !== closedTrade.id);
+  tradesObj.open   = tradesObj.open.filter(t => t.id !== closedTrade.id);
   tradesObj.closed.unshift(closedTrade);
   await saveTrades(tradesObj);
 }
 
-async function loadSignals() {
-  return await readJSON(SIGNALS_FILE, DEFAULT_SIGNALS);
-}
-
-async function saveSignals(signalsObj) {
-  return await writeJSON(SIGNALS_FILE, signalsObj);
-}
+async function loadSignals()          { return await readJSON(SIGNALS_FILE, DEFAULT_SIGNALS); }
+async function saveSignals(signalsObj) { return await writeJSON(SIGNALS_FILE, signalsObj); }
 
 async function addSignal(signal) {
   const data = await loadSignals();
   data.signals.unshift(signal);
-  // Keep last 1000 signals
   if (data.signals.length > 1000) data.signals = data.signals.slice(0, 1000);
   await saveSignals(data);
 }
 
 async function updateSignal(signal) {
   const data = await loadSignals();
-  const idx = data.signals.findIndex(s => s.id === signal.id);
-  if (idx >= 0) {
-    data.signals[idx] = signal;
-    await saveSignals(data);
-  }
+  const idx  = data.signals.findIndex(s => s.id === signal.id);
+  if (idx >= 0) { data.signals[idx] = signal; await saveSignals(data); }
 }
 
 async function getSignalById(id) {
@@ -205,21 +220,15 @@ async function getSignalById(id) {
 
 async function getSignals(filters = {}) {
   const data = await loadSignals();
-  let list = data.signals || [];
+  let list   = data.signals || [];
 
-  if (filters.exchange && filters.exchange !== 'ALL') {
-    list = list.filter(s => (s.exchange || 'binance').toLowerCase() === filters.exchange.toLowerCase());
-  }
-  if (filters.timeframe && filters.timeframe !== 'ALL') {
-    list = list.filter(s => s.timeframe === filters.timeframe);
-  }
-  if (filters.direction && filters.direction !== 'ALL') {
-    list = list.filter(s => s.direction === filters.direction.toUpperCase());
-  }
-  if (filters.result && filters.result !== 'ALL') {
-    if (filters.result === 'FIRED') list = list.filter(s => s.tradeFired);
+  if (filters.exchange  && filters.exchange  !== 'ALL') list = list.filter(s => (s.exchange || 'binance').toLowerCase() === filters.exchange.toLowerCase());
+  if (filters.timeframe && filters.timeframe !== 'ALL') list = list.filter(s => s.timeframe === filters.timeframe);
+  if (filters.direction && filters.direction !== 'ALL') list = list.filter(s => s.direction === filters.direction.toUpperCase());
+  if (filters.result    && filters.result    !== 'ALL') {
+    if (filters.result === 'FIRED')   list = list.filter(s => s.tradeFired);
     else if (filters.result === 'SKIPPED') list = list.filter(s => !s.tradeFired);
-    else if (filters.result === 'FAILED') list = list.filter(s => s.gate1 === 'FAIL' || s.gate2 === 'FAIL' || s.gate3 === 'FAIL' || s.gate4 === 'FAIL');
+    else if (filters.result === 'FAILED')  list = list.filter(s => s.gate1 === 'FAIL' || s.gate2 === 'FAIL' || s.gate3 === 'FAIL' || s.gate4 === 'FAIL');
   }
   if (filters.pattern && filters.pattern !== 'ALL') {
     list = list.filter(s => s.wmPattern === filters.pattern || (filters.pattern === 'NONE' && !s.wmPattern));
@@ -228,7 +237,6 @@ async function getSignals(filters = {}) {
     const coinUpper = filters.coin.toUpperCase();
     list = list.filter(s => s.symbol.includes(coinUpper));
   }
-
   return list;
 }
 
@@ -238,10 +246,7 @@ async function getAllCoinStates() {
 }
 
 async function saveCoinStates(coins) {
-  await writeJSON(POSITIONS_FILE, {
-    lastUpdated: Date.now(),
-    coins
-  });
+  await writeJSON(POSITIONS_FILE, { lastUpdated: Date.now(), coins });
 }
 
 async function getDemoBalance() {
@@ -256,19 +261,8 @@ async function saveDemoBalance(amount) {
 }
 
 module.exports = {
-  initialize,
-  loadSettings,
-  saveSettings,
-  loadTrades,
-  saveTrades,
-  saveTrade,
-  closeTrade,
-  addSignal,
-  updateSignal,
-  getSignalById,
-  getSignals,
-  getAllCoinStates,
-  saveCoinStates,
-  getDemoBalance,
-  saveDemoBalance
+  initialize, loadSettings, saveSettings,
+  loadTrades, saveTrades, saveTrade, closeTrade,
+  addSignal, updateSignal, getSignalById, getSignals,
+  getAllCoinStates, saveCoinStates, getDemoBalance, saveDemoBalance
 };

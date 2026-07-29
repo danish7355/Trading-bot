@@ -1,21 +1,26 @@
+// ── WebSocket connection ──────────────────────────────────────────
+
 function getWebSocketURL() {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const host = window.location.host;
-  return protocol + '//' + host;
+  return protocol + '//' + window.location.host;
 }
 
 let ws = null;
 let wsReconnectAttempts = 0;
-let wsReconnectTimer = null;
+let wsReconnectTimer    = null;
 
-let scannerCoins = [];
+let scannerCoins    = [];
 let openTradesLocal = [];
 const currentPrices = {};
 let activeTimeframe = '4h';
-let sortColumn = 'score';
-let sortDirection = 'desc';
+let sortColumn      = 'score';
+let sortDirection   = 'desc';
 let dailyRealizedPnL = 0;
-let appSettings = {};
+let appSettings     = {};
+
+// Per-market state
+const marketCoins  = { nse: [], commodities: [], nasdaq: [] };
+const marketTrades = { nse: [], commodities: [], nasdaq: [] };
 
 document.addEventListener('DOMContentLoaded', () => {
   connectWebSocket();
@@ -27,16 +32,11 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 function connectWebSocket() {
-  const url = getWebSocketURL();
-  console.log('[WS] Connecting to backend:', url);
-
   updateConnectionBadge('connecting');
-
-  ws = new WebSocket(url);
+  ws = new WebSocket(getWebSocketURL());
 
   ws.onopen = () => {
     wsReconnectAttempts = 0;
-    console.log('[WS] ✅ Connected to backend');
     updateConnectionBadge('connected');
     sendToBackend('GET_INITIAL_STATE', {});
   };
@@ -51,180 +51,210 @@ function connectWebSocket() {
   };
 
   ws.onclose = (event) => {
-    console.log('[WS] Disconnected — code:', event.code);
     updateConnectionBadge('disconnected');
     scheduleReconnect();
   };
 
-  ws.onerror = (error) => {
-    console.error('[WS] Error:', error);
-    updateConnectionBadge('error');
-  };
+  ws.onerror = () => updateConnectionBadge('error');
 }
 
 function scheduleReconnect() {
   if (wsReconnectTimer) clearTimeout(wsReconnectTimer);
   const delay = Math.min(1000 * Math.pow(2, wsReconnectAttempts), 8000);
   wsReconnectAttempts++;
-  console.log('[WS] Reconnecting in ' + delay + 'ms');
   wsReconnectTimer = setTimeout(connectWebSocket, delay);
 }
 
 function sendToBackend(type, data) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type, data }));
-  } else {
-    console.warn('[WS] Cannot send — not connected. Type:', type);
   }
 }
 
 function updateConnectionBadge(status) {
   const badge = document.getElementById('connection-status');
   if (!badge) return;
-
   const states = {
     connected:    { text: '⚡ Connected',    class: 'status-connected' },
     connecting:   { text: '⏳ Connecting...',  class: 'status-connecting' },
     disconnected: { text: '🔴 Disconnected',  class: 'status-disconnected' },
     error:        { text: '❌ Error',         class: 'status-error' }
   };
-
   const s = states[status] || states.disconnected;
   badge.textContent = s.text;
-  badge.className = 'connection-badge ' + s.class;
+  badge.className   = 'connection-badge ' + s.class;
 }
+
+// ── Message routing ───────────────────────────────────────────────
 
 function handleBackendMessage(msg) {
   switch (msg.type) {
-    case 'PRICE_UPDATE':
-      handlePriceUpdate(msg.data);
-      break;
-    case 'SCANNER_UPDATE':
-      handleScannerUpdate(msg.data);
-      break;
-    case 'SIGNAL_DETECTED':
-      handleNewSignal(msg.data);
-      break;
-    case 'TRADE_OPENED':
-      handleTradeOpened(msg.data);
-      break;
-    case 'TRADE_UPDATE':
-      handleTradeUpdate(msg.data);
-      break;
-    case 'TRADE_CLOSED':
-      handleTradeClosed(msg.data);
-      break;
-    case 'WM_CONFIRMED':
-      showWMModal(msg.data);
-      break;
-    case 'WM_STATE_CHANGE':
-      handleWMStateChange(msg.data);
-      break;
-    case 'RANGING_DETECTED':
-      handleRangingDetected(msg.data);
-      break;
-    case 'SYSTEM_STATUS':
-      handleSystemStatus(msg.data);
-      break;
-    case 'GATE_LOG':
-      updateGateLog(msg.data);
-      break;
-    case 'ALERT':
-      showAlert(msg.data);
-      break;
-    case 'BACKTEST_PROGRESS':
-      updateBacktestProgress(msg.data);
-      break;
-    case 'BACKTEST_COMPLETE':
-      showBacktestResults(msg.data);
-      break;
-    case 'INITIAL_STATE':
-      initializeFromState(msg.data);
-      break;
-    case 'SETTINGS_UPDATED':
-      handleSettingsUpdated(msg.data);
-      break;
+    case 'PRICE_UPDATE':         handlePriceUpdate(msg.data); break;
+    case 'SCANNER_UPDATE':       handleScannerUpdate(msg.data); break;
+    case 'SIGNAL_DETECTED':      handleNewSignal(msg.data); break;
+    case 'TRADE_OPENED':         handleTradeOpened(msg.data); break;
+    case 'TRADE_UPDATE':         handleTradeUpdate(msg.data); break;
+    case 'TRADE_CLOSED':         handleTradeClosed(msg.data); break;
+    case 'WM_CONFIRMED':         showWMModal(msg.data); break;
+    case 'WM_STATE_CHANGE':      handleWMStateChange(msg.data); break;
+    case 'RANGING_DETECTED':     handleRangingDetected(msg.data); break;
+    case 'SYSTEM_STATUS':        handleSystemStatus(msg.data); break;
+    case 'GATE_LOG':             updateGateLog(msg.data); break;
+    case 'ALERT':                showAlert(msg.data); break;
+    case 'BACKTEST_PROGRESS':    updateBacktestProgress(msg.data); break;
+    case 'BACKTEST_COMPLETE':    showBacktestResults(msg.data); break;
+    case 'INITIAL_STATE':        initializeFromState(msg.data); break;
+    case 'SETTINGS_UPDATED':     handleSettingsUpdated(msg.data); break;
     case 'BALANCE_UPDATE':
-      if (msg.data && msg.data.demoBalance !== undefined) {
-        const demoBalEl = document.getElementById('demo-balance');
-        if (demoBalEl) {
-          demoBalEl.textContent = '$' + msg.data.demoBalance.toLocaleString('en-US', { minimumFractionDigits: 2 });
-        }
-      }
+      const demoBalEl = document.getElementById('demo-balance');
+      if (demoBalEl && msg.data?.demoBalance !== undefined)
+        demoBalEl.textContent = '$' + msg.data.demoBalance.toLocaleString('en-US', { minimumFractionDigits: 2 });
       break;
+    // Issue 1: heartbeat events
+    case 'SCAN_HEARTBEAT':       handleScanHeartbeat(msg.data); break;
+    // Multi-market
+    case 'MARKET_SCANNER_UPDATE': handleMarketScannerUpdate(msg.data); break;
+    case 'MARKET_SCAN_HEARTBEAT': handleMarketHeartbeat(msg.data); break;
+    case 'MARKET_TRADE_OPENED':   handleMarketTradeOpened(msg.data); break;
     default:
-      console.log('[WS] Unknown message type:', msg.type);
+      // silently ignore unknown types
   }
 }
 
-function initializeFromState(state) {
-  console.log('[INIT] Received initial state from backend');
+// ── Initial state ─────────────────────────────────────────────────
 
+function initializeFromState(state) {
   appSettings = state.settings || {};
 
   const demoBalEl = document.getElementById('demo-balance');
-  if (demoBalEl) {
-    demoBalEl.textContent = '$' + (state.demoBalance ?? 10000).toLocaleString('en-US', { minimumFractionDigits: 2 });
-  }
+  if (demoBalEl) demoBalEl.textContent = '$' + (state.demoBalance ?? 10000).toLocaleString('en-US', { minimumFractionDigits: 2 });
 
-  if (state.currentPrices) {
-    Object.assign(currentPrices, state.currentPrices);
-  }
+  if (state.currentPrices) Object.assign(currentPrices, state.currentPrices);
 
-  if (state.coins && state.coins.length > 0) {
+  if (state.coins?.length > 0) {
     scannerCoins = state.coins;
     renderScannerTable();
-    console.log('[INIT] Scanner loaded with ' + state.coins.length + ' coins');
   }
 
   if (state.openTrades) {
     openTradesLocal = state.openTrades;
     const grid = document.getElementById('positions-grid');
     if (grid) grid.innerHTML = '';
-    openTradesLocal.forEach(trade => addTradeCardToDOM(trade));
+    openTradesLocal.forEach(t => addTradeCardToDOM(t));
     const openCountEl = document.getElementById('open-trades-count');
     if (openCountEl) openCountEl.textContent = openTradesLocal.length;
-
     const panel = document.getElementById('active-positions');
     if (panel) panel.style.display = openTradesLocal.length > 0 ? 'block' : 'none';
   }
 
-  if (state.signals) {
-    populateSignalTable(state.signals);
-  }
+  if (state.signals) populateSignalTable(state.signals);
+  if (state.dailyPnL) { dailyRealizedPnL = state.dailyPnL.realizedPnL || 0; updateTopBarTotalPnL(); }
+  if (state.systemStatus) handleSystemStatus(state.systemStatus);
+  if (state.settings?.timeframe) setActiveTimeframe(state.settings.timeframe);
 
-  if (state.dailyPnL) {
-    dailyRealizedPnL = state.dailyPnL.realizedPnL || 0;
-    updateTopBarTotalPnL();
-  }
+  // Issue 1: show initial heartbeat
+  if (state.systemStatus?.scanHeartbeat) handleScanHeartbeat(state.systemStatus.scanHeartbeat);
 
-  if (state.systemStatus) {
-    handleSystemStatus(state.systemStatus);
+  // Multi-market initial status
+  if (state.marketStatus) {
+    Object.entries(state.marketStatus).forEach(([marketId, info]) => {
+      if (info.heartbeat) handleMarketHeartbeat({ market: marketId, heartbeat: info.heartbeat });
+    });
   }
-
-  if (state.settings?.timeframe) {
-    setActiveTimeframe(state.settings.timeframe);
-  }
-
-  console.log('[INIT] ✅ App initialized from backend state');
 }
+
+// ── Issue 1: scan heartbeat display ──────────────────────────────
+
+function handleScanHeartbeat(hb) {
+  if (!hb) return;
+  updateHeartbeatUI('crypto', hb);
+}
+
+function handleMarketHeartbeat(data) {
+  if (!data?.market || !data?.heartbeat) return;
+  updateHeartbeatUI(data.market, data.heartbeat);
+}
+
+function updateHeartbeatUI(marketId, hb) {
+  const statusEl   = document.getElementById(`hb-${marketId}-status`);
+  const timeEl     = document.getElementById(`hb-${marketId}-time`);
+  const durationEl = document.getElementById(`hb-${marketId}-duration`);
+
+  if (!statusEl) return;
+
+  const now = Date.now();
+  const minsAgo = hb.timestamp ? Math.floor((now - hb.timestamp) / 60000) : null;
+  const timeStr  = minsAgo !== null
+    ? (minsAgo === 0 ? 'just now' : `${minsAgo}m ago`)
+    : '—';
+
+  if (hb.status === 'ok') {
+    statusEl.textContent = '✅ OK';
+    statusEl.className   = 'badge badge-hb-ok';
+  } else if (hb.status === 'running') {
+    statusEl.textContent = '⚙️ Running...';
+    statusEl.className   = 'badge badge-hb-running';
+  } else if (hb.status === 'error') {
+    statusEl.textContent = '⚠️ Error';
+    statusEl.className   = 'badge badge-hb-error';
+    if (hb.error) statusEl.title = hb.error;
+  } else {
+    statusEl.textContent = '⏳ Pending';
+    statusEl.className   = 'badge badge-hb-pending';
+  }
+
+  if (timeEl) {
+    timeEl.textContent = `Last: ${timeStr}`;
+    // Color based on age: > 10 min = amber, > 15 min = red
+    if (minsAgo !== null && minsAgo > 15) timeEl.className = 'red';
+    else if (minsAgo !== null && minsAgo > 10) timeEl.className = 'amber';
+    else timeEl.className = 'dim';
+  }
+
+  if (durationEl && hb.durationMs != null) {
+    durationEl.textContent = `(${(hb.durationMs / 1000).toFixed(1)}s)`;
+  }
+
+  // Also update the top bar badge for crypto
+  if (marketId === 'crypto') {
+    const topBadge = document.getElementById('scan-heartbeat-badge');
+    if (topBadge) {
+      if (hb.status === 'ok') {
+        topBadge.textContent = `✅ ${timeStr}`;
+        topBadge.className   = 'badge badge-hb-ok';
+      } else if (hb.status === 'running') {
+        topBadge.textContent = '⚙️';
+        topBadge.className   = 'badge badge-hb-running';
+      } else if (hb.status === 'error') {
+        topBadge.textContent = `⚠️ ${timeStr}`;
+        topBadge.className   = 'badge badge-hb-error';
+        topBadge.title       = hb.error || 'Scan error';
+      }
+    }
+  }
+}
+
+// Periodically refresh heartbeat age display
+setInterval(() => {
+  // Re-fetch heartbeat from server every 60 seconds
+  fetch('/api/scanner/heartbeat').then(r => r.json()).then(hb => handleScanHeartbeat(hb)).catch(() => {});
+}, 60000);
+
+// ── Price updates ─────────────────────────────────────────────────
 
 let totalTicksReceived = 0;
 
 function handlePriceUpdate(priceData) {
-  let tickBatchSize = Object.keys(priceData).length;
-  totalTicksReceived += tickBatchSize;
-
+  totalTicksReceived += Object.keys(priceData).length;
   const tickBadge = document.getElementById('live-ticks-badge');
   if (tickBadge) {
     tickBadge.textContent = `⚡ LIVE STREAM: ${totalTicksReceived} Ticks`;
-    tickBadge.className = 'badge badge-active';
+    tickBadge.className   = 'badge badge-active';
   }
 
   Object.entries(priceData).forEach(([symbol, info]) => {
-    const price = typeof info === 'object' ? info.price : info;
+    const price  = typeof info === 'object' ? info.price : info;
     const change = typeof info === 'object' ? info.change : 0;
-
     if (!price || isNaN(price)) return;
 
     const previousPrice = currentPrices[symbol];
@@ -232,43 +262,29 @@ function handlePriceUpdate(priceData) {
 
     const priceEl = document.getElementById('price-' + symbol);
     if (priceEl) {
-      const previousText = priceEl.textContent;
       const newText = '$' + formatPrice(price);
-
-      if (newText !== previousText) {
+      if (newText !== priceEl.textContent) {
         priceEl.textContent = newText;
-
         priceEl.classList.remove('price-up', 'price-down');
         void priceEl.offsetWidth;
-        if (previousPrice && price > previousPrice) {
-          priceEl.classList.add('price-up');
-          priceEl.style.color = '#00ff88';
-        } else if (previousPrice && price < previousPrice) {
-          priceEl.classList.add('price-down');
-          priceEl.style.color = '#ff3366';
-        }
-        setTimeout(() => {
-          priceEl.style.color = '';
-        }, 600);
+        if (previousPrice && price > previousPrice) { priceEl.classList.add('price-up'); priceEl.style.color = '#00ff88'; }
+        else if (previousPrice && price < previousPrice) { priceEl.classList.add('price-down'); priceEl.style.color = '#ff3366'; }
+        setTimeout(() => { priceEl.style.color = ''; }, 600);
       }
     }
 
     const changeEl = document.getElementById('change-' + symbol);
     if (changeEl && !isNaN(change)) {
       changeEl.textContent = (change >= 0 ? '+' : '') + change.toFixed(2) + '%';
-      changeEl.className = change >= 0 ? 'green' : 'red';
+      changeEl.className   = change >= 0 ? 'green' : 'red';
     }
 
-    openTradesLocal
-      .filter(t => t.symbol === symbol)
-      .forEach(trade => recalculateTradePnL(trade, price));
+    openTradesLocal.filter(t => t.symbol === symbol).forEach(t => recalculateTradePnL(t, price));
   });
 
   if (window.chartOverlayOpen) {
-    const activeSymbol = document.getElementById('chart-symbol-title')?.textContent;
-    if (activeSymbol && currentPrices[activeSymbol]) {
-      updateChartTick(currentPrices[activeSymbol]);
-    }
+    const activeSym = document.getElementById('chart-symbol-title')?.textContent;
+    if (activeSym && currentPrices[activeSym]) updateChartTick(currentPrices[activeSym]);
   }
 
   updateTopBarTotalPnL();
@@ -276,145 +292,102 @@ function handlePriceUpdate(priceData) {
 
 function recalculateTradePnL(trade, currentPrice) {
   let rawPnL = 0;
-  if (trade.direction === 'LONG') {
-    rawPnL = ((currentPrice - trade.entryPrice) / trade.entryPrice) * trade.positionValue * trade.leverage;
-  } else {
-    rawPnL = ((trade.entryPrice - currentPrice) / trade.entryPrice) * trade.positionValue * trade.leverage;
-  }
-
+  if (trade.direction === 'LONG') rawPnL = ((currentPrice - trade.entryPrice) / trade.entryPrice) * trade.positionValue * trade.leverage;
+  else rawPnL = ((trade.entryPrice - currentPrice) / trade.entryPrice) * trade.positionValue * trade.leverage;
   const unrealizedPnL = rawPnL * (trade.remainingPct || 1.0);
-  const pnlPct = (unrealizedPnL / trade.positionValue) * 100;
-
+  const pnlPct        = (unrealizedPnL / trade.positionValue) * 100;
   trade._unrealizedPnL = unrealizedPnL;
-  trade._currentPrice = currentPrice;
+  trade._currentPrice  = currentPrice;
 
   const pnlEl = document.getElementById('pnl-' + trade.id);
   if (pnlEl) {
     const sign = unrealizedPnL >= 0 ? '+' : '';
     pnlEl.textContent = sign + '$' + Math.abs(unrealizedPnL).toFixed(2) + ' (' + sign + pnlPct.toFixed(2) + '%)';
-    pnlEl.className = 'trade-pnl ' + (unrealizedPnL >= 0 ? 'pnl-positive' : 'pnl-negative');
+    pnlEl.className   = 'trade-pnl ' + (unrealizedPnL >= 0 ? 'pnl-positive' : 'pnl-negative');
   }
 
-  const currentPriceEl = document.getElementById('current-price-' + trade.id);
-  if (currentPriceEl) {
-    currentPriceEl.textContent = '$' + formatPrice(currentPrice);
-  }
+  const cpEl = document.getElementById('current-price-' + trade.id);
+  if (cpEl) cpEl.textContent = '$' + formatPrice(currentPrice);
 }
 
 function updateTopBarTotalPnL() {
-  const totalUnrealized = openTradesLocal.reduce((sum, t) => sum + (t._unrealizedPnL || 0), 0);
+  const totalUnrealized = openTradesLocal.reduce((s, t) => s + (t._unrealizedPnL || 0), 0);
   const total = dailyRealizedPnL + totalUnrealized;
-  const sign = total >= 0 ? '+' : '';
-
-  const el = document.getElementById('pnl-today');
+  const el    = document.getElementById('pnl-today');
   if (el) {
-    el.textContent = sign + '$' + Math.abs(total).toFixed(2);
-    el.className = total >= 0 ? 'green' : 'red';
+    el.textContent = (total >= 0 ? '+' : '') + '$' + Math.abs(total).toFixed(2);
+    el.className   = total >= 0 ? 'green' : 'red';
   }
 }
 
+// ── Scanner table ─────────────────────────────────────────────────
+
 function handleScannerUpdate(data) {
-  const updatedCoins = data.coins || [];
-  scannerCoins = updatedCoins;
-
-  const tbody = document.getElementById('scanner-tbody');
+  scannerCoins = data.coins || [];
+  const tbody  = document.getElementById('scanner-tbody');
   if (!tbody) return;
-
-  const existingRows = tbody.querySelectorAll('tr');
-
-  if (existingRows.length === 0) {
-    renderScannerTable();
-    return;
-  }
-
-  updatedCoins.forEach(coin => {
+  if (tbody.querySelectorAll('tr').length === 0) { renderScannerTable(); return; }
+  scannerCoins.forEach(coin => {
     const row = document.getElementById('row-' + coin.symbol);
     if (!row) return;
-
     const scoreEl = row.querySelector('.score-cell');
     if (scoreEl) {
       const score = coin.score?.total || coin.score || 0;
-      const scoreDisplay = coin.scoreDisplay || (score + (coin.score?.wmBonus > 0
-        ? '(+' + coin.score.wmBonus + ')' : ''));
-      scoreEl.innerHTML = scoreDisplay;
+      scoreEl.innerHTML = coin.scoreDisplay || score;
       scoreEl.className = 'score-cell ' + getScoreClass(score);
     }
-
     updateGateCells(row, coin);
-
-    const wmCell = row.querySelector('.wm-cell');
+    const wmCell     = row.querySelector('.wm-cell');
     if (wmCell) wmCell.innerHTML = renderWMBadge(coin.wmState, coin.wmType);
-
     const statusCell = row.querySelector('.status-cell');
     if (statusCell) statusCell.innerHTML = renderStatusBadges(coin);
-
-    const allPass = coin.gate1 === 'PASS' && coin.gate2 === 'PASS'
-      && coin.gate3 === 'PASS' && coin.gate4 === 'PASS';
-
-    row.className = [
-      coin.isRanging ? 'row-ranging' : '',
-      coin.openTrade ? 'row-trade-active' : '',
-      allPass ? 'row-all-gates' : '',
-      coin.wmState === 'READY' ? 'row-wm-ready' : ''
-    ].filter(Boolean).join(' ');
+    const allPass = coin.gate1 === 'PASS' && coin.gate2 === 'PASS' && coin.gate3 === 'PASS' && coin.gate4 === 'PASS';
+    row.className = [coin.isRanging ? 'row-ranging' : '', coin.openTrade ? 'row-trade-active' : '',
+      allPass ? 'row-all-gates' : '', coin.wmState === 'READY' ? 'row-wm-ready' : ''].filter(Boolean).join(' ');
   });
 }
 
 function updateGateCells(row, coin) {
   const gateData = [
-    { pass: coin.gate1 === 'PASS', value: coin.gate1Direction || '', reason: coin.gate1FailReason || coin.gate1Reason },
-    { pass: coin.gate2 === 'PASS', value: (coin.gate2Value?.toFixed(1) || '—') + '×', reason: coin.gate2FailReason || coin.gate2Reason },
-    { pass: coin.gate3 === 'PASS', value: coin.gate3ADX?.toFixed(0) || 'N/A', reason: coin.gate3FailReason || coin.gate3Reason },
-    { pass: coin.gate4 === 'PASS', value: coin.gate4RSI?.toFixed(1) || 'N/A', reason: coin.gate4FailReason || coin.gate4Reason }
+    { pass: coin.gate1 === 'PASS', value: coin.gate1Direction || '',          reason: coin.gate1FailReason },
+    { pass: coin.gate2 === 'PASS', value: (coin.gate2Value?.toFixed(1)||'—')+'×', reason: coin.gate2FailReason },
+    { pass: coin.gate3 === 'PASS', value: coin.gate3ADX?.toFixed(0) || 'N/A',  reason: coin.gate3FailReason },
+    { pass: coin.gate4 === 'PASS', value: coin.gate4RSI?.toFixed(1) || 'N/A',  reason: coin.gate4FailReason }
   ];
-
   row.querySelectorAll('[data-gate]').forEach((cell, i) => {
     const g = gateData[i];
     if (!g) return;
     cell.innerHTML = g.pass
-      ? '<span class="gate-pass" title="' + g.value + '">✅ ' + g.value + '</span>'
-      : '<span class="gate-fail" title="' + (g.reason || '') + '">❌ ' + g.value + '</span>';
+      ? `<span class="gate-pass" title="${g.value}">✅ ${g.value}</span>`
+      : `<span class="gate-fail" title="${g.reason||''}">❌ ${g.value}</span>`;
   });
 }
 
 function updateScannerRow(coin) {
   const existing = document.getElementById('row-' + coin.symbol);
-  if (existing) {
-    const rank = existing.rowIndex;
-    existing.outerHTML = createScannerRow(coin, rank);
-  }
+  if (existing) existing.outerHTML = createScannerRow(coin, existing.rowIndex);
 }
 
 function renderScannerTable() {
   const tbody = document.getElementById('scanner-tbody');
   if (!tbody) return;
   tbody.innerHTML = '';
-
   const filtered = applyScannerFilters(scannerCoins);
-  const sorted = sortCoins(filtered, sortColumn, sortDirection);
-
-  const active = sorted.filter(c => !c.isRanging);
-  const ranging = sorted.filter(c => c.isRanging);
-
-  active.forEach((coin, idx) => {
-    tbody.insertAdjacentHTML('beforeend', createScannerRow(coin, idx + 1));
-  });
-
+  const sorted   = sortCoins(filtered, sortColumn, sortDirection);
+  const active   = sorted.filter(c => !c.isRanging);
+  const ranging  = sorted.filter(c =>  c.isRanging);
+  active.forEach((coin, idx) => tbody.insertAdjacentHTML('beforeend', createScannerRow(coin, idx + 1)));
   const rangingCount = document.getElementById('ranging-count');
   if (rangingCount) rangingCount.textContent = ranging.length;
-
   const rangingTbody = document.getElementById('ranging-tbody');
-  if (rangingTbody) {
-    rangingTbody.innerHTML = ranging.map((c, i) => createScannerRow(c, i + 1)).join('');
-  }
+  if (rangingTbody) rangingTbody.innerHTML = ranging.map((c,i) => createScannerRow(c, i+1)).join('');
 }
 
 function applyScannerFilters(coins) {
-  const search = (document.getElementById('search-coin')?.value || '').toLowerCase();
-  const dirFilter = document.getElementById('filter-direction')?.value || 'All';
-  const statusFilter = document.getElementById('filter-status')?.value || 'All';
-  const scoreFilter = document.getElementById('filter-score')?.value || 'All';
-
+  const search      = (document.getElementById('search-coin')?.value || '').toLowerCase();
+  const dirFilter   = document.getElementById('filter-direction')?.value || 'All';
+  const statusFilter= document.getElementById('filter-status')?.value   || 'All';
+  const scoreFilter = document.getElementById('filter-score')?.value    || 'All';
   return coins.filter(coin => {
     if (search && !coin.symbol.toLowerCase().includes(search)) return false;
     if (dirFilter !== 'All' && coin.direction !== dirFilter.toUpperCase()) return false;
@@ -428,102 +401,66 @@ function applyScannerFilters(coins) {
 
 function sortCoins(coins, col, dir) {
   return [...coins].sort((a, b) => {
-    let aVal = a[col];
-    let bVal = b[col];
-    if (aVal === undefined || aVal === null) return 1;
-    if (bVal === undefined || bVal === null) return -1;
-    if (dir === 'desc') return bVal > aVal ? 1 : -1;
-    return aVal > bVal ? 1 : -1;
+    let aVal = a[col], bVal = b[col];
+    if (aVal == null) return 1;
+    if (bVal == null) return -1;
+    return dir === 'desc' ? (bVal > aVal ? 1 : -1) : (aVal > bVal ? 1 : -1);
   });
 }
 
 function createScannerRow(coin, rank) {
-  const direction = coin.direction === 'LONG'
-    ? '<span class="dir-long">▲ LONG</span>'
-    : coin.direction === 'SHORT'
-    ? '<span class="dir-short">▼ SHORT</span>'
-    : '<span class="dir-neutral">—</span>';
-
-  const scoreDisplay = coin.score?.total !== undefined
-    ? coin.score.total + (coin.score?.wmBonus > 0
-        ? '<span class="wm-bonus">(+' + coin.score.wmBonus + ')</span>' : '')
+  const direction   = coin.direction === 'LONG' ? '<span class="dir-long">▲ LONG</span>' : '<span class="dir-short">▼ SHORT</span>';
+  const scoreDisplay= coin.score?.total !== undefined
+    ? coin.score.total + (coin.score?.wmBonus > 0 ? `<span class="wm-bonus">(+${coin.score.wmBonus})</span>` : '')
     : (coin.scoreDisplay || coin.score || '—');
-
-  const g1Display = coin.gate1 === 'PASS'
-    ? '<span class="gate-pass" title="' + (coin.gate1Direction || '') + '">✅ ' + (coin.gate1Direction || '') + '</span>'
-    : '<span class="gate-fail" title="' + (coin.gate1FailReason || coin.gate1Reason || 'No cross') + '">❌</span>';
-
-  const g2Display = coin.gate2 === 'PASS'
-    ? '<span class="gate-pass">✅ ' + (coin.gate2Value?.toFixed(1) || '') + '×</span>'
-    : '<span class="gate-fail" title="' + (coin.gate2FailReason || coin.gate2Reason || '') + '">❌ ' + (coin.gate2Value?.toFixed(1) || '—') + '×</span>';
-
-  const g3Display = coin.gate3 === 'PASS'
-    ? '<span class="gate-pass">✅ ' + (coin.gate3ADX?.toFixed(0) || '') + '</span>'
-    : '<span class="gate-fail" title="' + (coin.gate3FailReason || coin.gate3Reason || '') + '">❌ ' + (coin.gate3ADX?.toFixed(0) || 'N/A') + '</span>';
-
-  const g4Display = coin.gate4 === 'PASS'
-    ? '<span class="gate-pass">✅ ' + (coin.gate4RSI?.toFixed(1) || '') + '</span>'
-    : '<span class="gate-fail" title="' + (coin.gate4FailReason || coin.gate4Reason || '') + '">❌ ' + (coin.gate4RSI?.toFixed(1) || 'N/A') + '</span>';
-
-  const adxClass = !coin.adx ? 'dim'
-    : coin.adx >= 25 ? 'green' : coin.adx >= 20 ? 'amber' : 'red';
-
-  const rsiClass = coin.rsi >= 30 && coin.rsi <= 65 ? 'green'
-    : coin.rsi > 65 && coin.rsi <= 75 ? 'amber' : 'red';
-
-  const volClass = coin.volumeRatio >= 1.5 ? 'green'
-    : coin.volumeRatio >= 1.0 ? 'amber' : 'red';
-
+  const g1 = coin.gate1 === 'PASS'
+    ? `<span class="gate-pass" title="${coin.gate1Direction||''}">✅ ${coin.gate1Direction||''}</span>`
+    : `<span class="gate-fail" title="${coin.gate1FailReason||'No cross'}">❌</span>`;
+  const g2 = coin.gate2 === 'PASS'
+    ? `<span class="gate-pass">✅ ${coin.gate2Value?.toFixed(1)||''}×</span>`
+    : `<span class="gate-fail" title="${coin.gate2FailReason||''}">❌ ${coin.gate2Value?.toFixed(1)||'—'}×</span>`;
+  const g3 = coin.gate3 === 'PASS'
+    ? `<span class="gate-pass">✅ ${coin.gate3ADX?.toFixed(0)||''}</span>`
+    : `<span class="gate-fail" title="${coin.gate3FailReason||''}">❌ ${coin.gate3ADX?.toFixed(0)||'N/A'}</span>`;
+  const g4 = coin.gate4 === 'PASS'
+    ? `<span class="gate-pass">✅ ${coin.gate4RSI?.toFixed(1)||''}</span>`
+    : `<span class="gate-fail" title="${coin.gate4FailReason||''}">❌ ${coin.gate4RSI?.toFixed(1)||'N/A'}</span>`;
+  const adxClass = !coin.adx ? 'dim' : coin.adx >= 25 ? 'green' : coin.adx >= 20 ? 'amber' : 'red';
+  const rsiClass = coin.rsi >= 30 && coin.rsi <= 65 ? 'green' : coin.rsi > 65 && coin.rsi <= 75 ? 'amber' : 'red';
+  const volClass = coin.volumeRatio >= 1.5 ? 'green' : coin.volumeRatio >= 1.0 ? 'amber' : 'red';
   const rowClass = [
     coin.isRanging ? 'row-ranging' : '',
     coin.openTrade ? 'row-trade-active' : '',
-    (coin.gate1 === 'PASS' && coin.gate2 === 'PASS' &&
-     coin.gate3 === 'PASS' && coin.gate4 === 'PASS') ? 'row-all-gates' : '',
-    (coin.wmState === 'READY') ? 'row-wm-ready' : ''
+    (coin.gate1 === 'PASS' && coin.gate2 === 'PASS' && coin.gate3 === 'PASS' && coin.gate4 === 'PASS') ? 'row-all-gates' : '',
+    coin.wmState === 'READY' ? 'row-wm-ready' : ''
   ].filter(Boolean).join(' ');
-
-  return `
-  <tr id="row-${coin.symbol}" class="${rowClass}">
+  return `<tr id="row-${coin.symbol}" class="${rowClass}">
     <td>${rank}</td>
-    <td class="symbol-cell" onclick="openChartOverlay('${coin.symbol}')"
-        style="cursor:pointer;font-weight:bold">
-      ${coin.symbol.replace('USDT', '')}
-      <span class="pair-suffix">USDT</span>
+    <td class="symbol-cell" onclick="openChartOverlay('${coin.symbol}')" style="cursor:pointer;font-weight:bold">
+      ${coin.symbol.replace('USDT','')} <span class="pair-suffix">USDT</span>
     </td>
-    <td id="price-${coin.symbol}" class="price-cell mono">
-      $${formatPrice(coin.price || 0)}
-    </td>
-    <td id="change-${coin.symbol}"
-        class="${(coin.change24h || 0) >= 0 ? 'green' : 'red'}">
-      ${(coin.change24h || 0) >= 0 ? '+' : ''}${(coin.change24h || 0).toFixed(2)}%
-    </td>
-    <td class="score-cell ${getScoreClass(coin.score?.total || coin.score)}">
-      ${scoreDisplay}
-    </td>
+    <td id="price-${coin.symbol}" class="price-cell mono">$${formatPrice(coin.price||0)}</td>
+    <td id="change-${coin.symbol}" class="${(coin.change24h||0)>=0?'green':'red'}">${(coin.change24h||0)>=0?'+':''}${(coin.change24h||0).toFixed(2)}%</td>
+    <td class="score-cell ${getScoreClass(coin.score?.total||coin.score)}">${scoreDisplay}</td>
     <td>${direction}</td>
     <td class="status-cell">${renderStatusBadges(coin)}</td>
-    <td class="mono dim">${coin.ema9?.toFixed(2) || '—'}</td>
-    <td class="mono dim">${coin.ema55?.toFixed(2) || '—'}</td>
-    <td class="${coin.emaRelationship === 'ABOVE' ? 'green' : 'red'}">
-      ${coin.emaRelationship || '—'}
-    </td>
-    <td class="${adxClass}">${coin.adx?.toFixed(1) || 'N/A'}</td>
-    <td class="${rsiClass}">${coin.rsi?.toFixed(1) || 'N/A'}</td>
-    <td class="${volClass}">${coin.volumeRatio?.toFixed(1) || '—'}×</td>
-    <td class="dim">${coin.fundingRate !== undefined
-      ? (coin.fundingRate > 0 ? '+' : '') + coin.fundingRate.toFixed(4) + '%'
-      : '—'}</td>
-    <td data-gate="1">${g1Display}</td>
-    <td data-gate="2">${g2Display}</td>
-    <td data-gate="3">${g3Display}</td>
-    <td data-gate="4">${g4Display}</td>
-    <td class="wm-cell">${renderWMBadge(coin.wmState, coin.wmType)}</td>
-    <td>
-      <button onclick="openChartOverlay('${coin.symbol}')"
-              class="chart-btn">📊</button>
-    </td>
+    <td class="mono dim">${coin.ema9?.toFixed(2)||'—'}</td>
+    <td class="mono dim">${coin.ema55?.toFixed(2)||'—'}</td>
+    <td class="${coin.emaRelationship==='ABOVE'?'green':'red'}">${coin.emaRelationship||'—'}</td>
+    <td class="${adxClass}">${coin.adx?.toFixed(1)||'N/A'}</td>
+    <td class="${rsiClass}">${coin.rsi?.toFixed(1)||'N/A'}</td>
+    <td class="${volClass}">${coin.volumeRatio?.toFixed(1)||'—'}×</td>
+    <td class="dim">${coin.fundingRate!==undefined?(coin.fundingRate>0?'+':'')+coin.fundingRate.toFixed(4)+'%':'—'}</td>
+    <td data-gate="1">${g1}</td>
+    <td data-gate="2">${g2}</td>
+    <td data-gate="3">${g3}</td>
+    <td data-gate="4">${g4}</td>
+    <td class="wm-cell">${renderWMBadge(coin.wmState,coin.wmType)}</td>
+    <td><button onclick="openChartOverlay('${coin.symbol}')" class="chart-btn">📊</button></td>
   </tr>`;
 }
+
+// ── Trade cards ───────────────────────────────────────────────────
 
 function handleTradeOpened(trade) {
   addTradeCardToDOM(trade);
@@ -532,205 +469,211 @@ function handleTradeOpened(trade) {
 
 function handleTradeUpdate(update) {
   const tradeId = update.tradeId || update.id;
-  const trade = openTradesLocal.find(t => t.id === tradeId);
+  const trade   = openTradesLocal.find(t => t.id === tradeId);
   if (trade) {
     Object.assign(trade, update);
-    if (update.currentPrice) {
-      recalculateTradePnL(trade, update.currentPrice);
-    }
-
+    if (update.currentPrice) recalculateTradePnL(trade, update.currentPrice);
     const trailingEl = document.getElementById('trailing-' + trade.id);
-    if (trailingEl && update.trailingActive) {
+    if (trailingEl && update.trailingActive)
       trailingEl.textContent = '🔒 Active at $' + formatPrice(update.trailingStop);
-    }
   }
 }
 
 function handleTradeClosed(closedTrade) {
   openTradesLocal = openTradesLocal.filter(t => t.id !== closedTrade.id);
-
   const card = document.getElementById('card-' + closedTrade.id);
   if (card) card.remove();
-
-  const countEl = document.getElementById('positions-count');
+  const countEl    = document.getElementById('positions-count');
   if (countEl) countEl.textContent = openTradesLocal.length;
-
   const openCountTop = document.getElementById('open-trades-count');
   if (openCountTop) openCountTop.textContent = openTradesLocal.length;
-
   if (openTradesLocal.length === 0) {
     const panel = document.getElementById('active-positions');
     if (panel) panel.style.display = 'none';
   }
-
   dailyRealizedPnL += (closedTrade.realizedPnL || 0);
   updateTopBarTotalPnL();
-
-  showToast(`Trade Closed (${closedTrade.symbol}): ${getOutcomeDisplay(closedTrade.outcome)} PnL: ${closedTrade.realizedPnL >= 0 ? '+' : ''}$${closedTrade.realizedPnL.toFixed(2)}`, closedTrade.realizedPnL >= 0 ? 'success' : 'error');
+  const pnl  = closedTrade.realizedPnL || 0;
+  const sign = pnl >= 0 ? '+' : '';
+  showToast(`Trade Closed (${closedTrade.symbol}) ${getOutcomeDisplay(closedTrade.outcome)} ${sign}$${pnl.toFixed(2)}`, pnl >= 0 ? 'success' : 'error');
 }
 
 function addTradeCardToDOM(trade) {
   const panel = document.getElementById('active-positions');
   if (panel) panel.style.display = 'block';
-
   const grid = document.getElementById('positions-grid');
   if (!grid) return;
-
   const existing = document.getElementById('card-' + trade.id);
   if (existing) existing.remove();
-
   grid.insertAdjacentHTML('afterbegin', createTradeCard(trade));
-
-  if (!openTradesLocal.some(t => t.id === trade.id)) {
-    openTradesLocal.push(trade);
-  }
-
-  const currentPrice = currentPrices[trade.symbol] || trade.entryPrice;
-  recalculateTradePnL(trade, currentPrice);
+  if (!openTradesLocal.some(t => t.id === trade.id)) openTradesLocal.push(trade);
+  recalculateTradePnL(trade, currentPrices[trade.symbol] || trade.entryPrice);
 }
 
 function createTradeCard(trade) {
   const dirClass = trade.direction === 'LONG' ? 'dir-long' : 'dir-short';
-  const dirIcon = trade.direction === 'LONG' ? '▲' : '▼';
-
-  return `
-  <div class="trade-card" id="card-${trade.id}">
+  const dirIcon  = trade.direction === 'LONG' ? '▲' : '▼';
+  return `<div class="trade-card" id="card-${trade.id}">
     <div class="trade-card-header">
       <span class="trade-symbol">${trade.symbol}</span>
       <span class="trade-direction ${dirClass}">${dirIcon} ${trade.direction}</span>
-      <span class="trade-tf">${trade.timeframe?.toUpperCase()}</span>
-      <span class="trade-trigger">${trade.trigger || ''}</span>
+      <span class="trade-tf">${(trade.timeframe||'').toUpperCase()}</span>
+      <span class="trade-trigger">${trade.trigger||''}</span>
       <span class="trade-badge-open">🟢 OPEN</span>
     </div>
-
-    <div class="trade-timestamps">
-      Opened: <strong>${trade.openedAtUTC}</strong>
-    </div>
-
+    <div class="trade-timestamps">Opened: <strong>${trade.openedAtUTC}</strong></div>
     <div class="trade-prices">
       <div>Entry: <strong>$${formatPrice(trade.entryPrice)}</strong></div>
-      <div>Current:
-        <strong id="current-price-${trade.id}">
-          $${formatPrice(trade.currentPrice || trade.entryPrice)}
-        </strong>
-      </div>
+      <div>Current: <strong id="current-price-${trade.id}">$${formatPrice(trade.currentPrice||trade.entryPrice)}</strong></div>
     </div>
-
-    <div id="pnl-${trade.id}" class="trade-pnl pnl-neutral">
-      $0.00 (0.00%)
-    </div>
-
+    <div id="pnl-${trade.id}" class="trade-pnl pnl-neutral">$0.00 (0.00%)</div>
     <div class="trade-levels">
       <span class="level-sl">SL: $${formatPrice(trade.stopLoss)}</span>
-      <span class="level-tp1 ${trade.tp1Hit ? 'hit' : ''}">
-        TP1: $${formatPrice(trade.tp1)} ${trade.tp1Hit ? '✅' : ''}
-      </span>
-      <span class="level-tp2 ${trade.tp2Hit ? 'hit' : ''}">
-        TP2: $${formatPrice(trade.tp2)} ${trade.tp2Hit ? '✅' : ''}
-      </span>
+      <span class="level-tp1 ${trade.tp1Hit?'hit':''}">TP1: $${formatPrice(trade.tp1)} ${trade.tp1Hit?'✅':''}</span>
+      <span class="level-tp2 ${trade.tp2Hit?'hit':''}">TP2: $${formatPrice(trade.tp2)} ${trade.tp2Hit?'✅':''}</span>
       <span class="level-tp3">TP3: $${formatPrice(trade.tp3)}</span>
     </div>
-
     <div class="trade-trailing">
-      Trailing:
-      <span id="trailing-${trade.id}">
-        ${trade.trailingActive
-          ? '🔒 Active at $' + formatPrice(trade.trailingStop)
-          : 'Activates after TP1'}
-      </span>
+      Trailing: <span id="trailing-${trade.id}">${trade.trailingActive?'🔒 Active at $'+formatPrice(trade.trailingStop):'Activates after TP1'}</span>
     </div>
-
     <div class="trade-meta">
       <span>Score at entry: ${trade.scoreAtEntry}/100</span>
       <span>Position: $${trade.positionValue} × ${trade.leverage}×</span>
-      <span>Risk: ${((trade.remainingPct || 1) * 100).toFixed(0)}% open</span>
+      <span>Risk: ${((trade.remainingPct||1)*100).toFixed(0)}% open</span>
     </div>
-
     <div class="trade-actions">
-      <button onclick="openChartOverlay('${trade.symbol}')" class="btn-chart">
-        📊 Chart
-      </button>
-      <button onclick="closeTrade('${trade.id}')" class="btn-close-trade">
-        ❌ Close Trade
-      </button>
+      <button onclick="openChartOverlay('${trade.symbol}')" class="btn-chart">📊 Chart</button>
+      <button onclick="closeTrade('${trade.id}')" class="btn-close-trade">❌ Close Trade</button>
     </div>
   </div>`;
 }
 
 async function closeTrade(tradeId) {
   try {
-    const res = await fetch('/api/trades/close', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tradeId })
-    });
+    const res  = await fetch('/api/trades/close', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ tradeId }) });
     const data = await res.json();
-    if (data.success) {
-      showToast('Trade manually closed at $' + formatPrice(data.exitPrice), 'success');
-    } else {
-      showToast('Close trade error: ' + data.error, 'error');
-    }
+    if (data.success) showToast('Trade manually closed at $' + formatPrice(data.exitPrice), 'success');
+    else showToast('Close trade error: ' + data.error, 'error');
   } catch (err) {
     showToast('Failed to close trade: ' + err.message, 'error');
   }
 }
 
-function showWMModal(data) {
-  const signal = data.signal;
-  const result = data.wmResult;
+// ── Issue 3: Trade Log tab ────────────────────────────────────────
 
-  const modal = document.createElement('div');
+async function loadTradeLog() {
+  try {
+    const res  = await fetch('/api/trades/log');
+    const data = await res.json();
+    const tbody = document.getElementById('tradelog-tbody');
+    if (!tbody) return;
+
+    const totalEl  = document.getElementById('tl-total');
+    const openEl   = document.getElementById('tl-open');
+    const closedEl = document.getElementById('tl-closed');
+    if (totalEl)  totalEl.textContent  = data.total || 0;
+    if (openEl)   openEl.textContent   = data.openCount || 0;
+    if (closedEl) closedEl.textContent = data.closedCount || 0;
+
+    tbody.innerHTML = '';
+    (data.trades || []).forEach((t, idx) => {
+      const pnl     = t.realizedPnL || 0;
+      const pct     = t.pnlPercent  || 0;
+      const pnlClass= t.status === 'OPEN' ? '' : (pnl >= 0 ? 'green' : 'red');
+      const pnlStr  = t.status === 'OPEN' ? '<span class="dim">Open</span>' : `<span class="${pnlClass}">${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}</span>`;
+      const pctStr  = t.status === 'OPEN' ? '—' : `<span class="${pnlClass}">${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%</span>`;
+      const sc      = t.strategyConditions || {};
+      const gates   = `<span class="${sc.gate1==='PASS'?'green':'red'}">G1</span> <span class="${sc.gate2==='PASS'?'green':'red'}">G2</span> <span class="${sc.gate3==='PASS'?'green':'red'}">G3</span> <span class="${sc.gate4==='PASS'?'green':'red'}">G4</span>`;
+      const dir     = t.direction === 'LONG'
+        ? '<span class="dir-long">▲ LONG</span>' : '<span class="dir-short">▼ SHORT</span>';
+      const statusBadge = t.status === 'OPEN'
+        ? '<span class="badge badge-active">🟢 OPEN</span>'
+        : `<span class="dim">${getOutcomeDisplay(t.exitReason)}</span>`;
+      tbody.insertAdjacentHTML('beforeend', `<tr>
+        <td>${idx + 1}</td>
+        <td><strong>${t.symbol}</strong></td>
+        <td>${dir}</td>
+        <td class="mono">${t.timeframeUsed || '?'}</td>
+        <td class="dim">${t.strategyConditions?.trigger || '—'}</td>
+        <td style="font-size:0.75rem;">${gates}</td>
+        <td>${t.strategyConditions?.scoreAtEntry || '—'}</td>
+        <td class="mono">$${formatPrice(t.entryPrice)}</td>
+        <td class="time-cell dim">${t.entryTime || '—'}</td>
+        <td class="mono">${t.exitPrice ? '$' + formatPrice(t.exitPrice) : '—'}</td>
+        <td class="time-cell dim">${t.exitTime || '—'}</td>
+        <td>${statusBadge}</td>
+        <td>${pnlStr}</td>
+        <td>${pctStr}</td>
+        <td>${t.status === 'OPEN' ? '<span class="badge badge-active">OPEN</span>' : '<span class="dim">CLOSED</span>'}</td>
+      </tr>`);
+    });
+  } catch (err) {
+    showToast('Trade log error: ' + err.message, 'error');
+  }
+}
+
+function exportTradeLogCSV() {
+  fetch('/api/trades/log').then(r => r.json()).then(data => {
+    const headers = ['Symbol','Direction','TF','Trigger','Gate1','Gate2','Gate3','Gate4','Score',
+      'EntryPrice','EntryTime','ExitPrice','ExitTime','ExitReason','PnL$','PnL%','Status'];
+    const rows = (data.trades || []).map(t => {
+      const sc = t.strategyConditions || {};
+      return [t.symbol, t.direction, t.timeframeUsed, sc.trigger||'',
+        sc.gate1, sc.gate2, sc.gate3, sc.gate4, sc.scoreAtEntry||0,
+        t.entryPrice, t.entryTime||'', t.exitPrice||'', t.exitTime||'',
+        t.exitReason||'', t.realizedPnL||0, t.pnlPercent||0, t.status];
+    });
+    const csv  = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a'); a.href = url; a.download = 'trade_log.csv'; a.click();
+  });
+}
+
+// ── Signals ───────────────────────────────────────────────────────
+
+function showWMModal(data) {
+  const signal = data.signal, result = data.wmResult;
+  const modal  = document.createElement('div');
   modal.className = 'modal-overlay';
   modal.id = 'wm-modal';
-  modal.innerHTML = `
-    <div class="modal-box">
-      <div class="modal-header amber">
-        🔔 ${result.type} FORMATION CONFIRMED — AUTO-TRADE IN <span id="modal-countdown">10</span>s
-      </div>
-      <div>Symbol: <strong>${signal.symbol}</strong> | ${result.type === 'W' ? '▲ LONG' : '▼ SHORT'}</div>
-      <div>Break Price: $${formatPrice(signal.wmBreakPrice || signal.signalCandleClose)}</div>
-      <div>Score: ${signal.scoreAtSignal}/100</div>
-      <div class="modal-buttons">
-        <button class="btn-confirm" onclick="confirmWMTrade('${signal.id}')">✅ CONFIRM NOW</button>
-        <button class="btn-skip" onclick="skipWMTrade('${signal.id}')">❌ SKIP TRADE</button>
-      </div>
-    </div>`;
-
+  modal.innerHTML = `<div class="modal-box">
+    <div class="modal-header amber">🔔 ${result.type} FORMATION CONFIRMED — AUTO-TRADE IN <span id="modal-countdown">10</span>s</div>
+    <div>Symbol: <strong>${signal.symbol}</strong> | ${result.type==='W'?'▲ LONG':'▼ SHORT'}</div>
+    <div>Break Price: $${formatPrice(signal.wmBreakPrice||signal.signalCandleClose)}</div>
+    <div>Score: ${signal.scoreAtSignal}/100</div>
+    <div class="modal-buttons">
+      <button class="btn-confirm" onclick="confirmWMTrade('${signal.id}')">✅ CONFIRM NOW</button>
+      <button class="btn-skip"    onclick="skipWMTrade('${signal.id}')">❌ SKIP TRADE</button>
+    </div>
+  </div>`;
   document.body.appendChild(modal);
-
   let countdown = 10;
   const timer = setInterval(() => {
     countdown--;
     const el = document.getElementById('modal-countdown');
     if (el) el.textContent = countdown;
-    if (countdown <= 0) {
-      clearInterval(timer);
-      const m = document.getElementById('wm-modal');
-      if (m) m.remove();
-    }
+    if (countdown <= 0) { clearInterval(timer); const m = document.getElementById('wm-modal'); if (m) m.remove(); }
   }, 1000);
 }
 
 function confirmWMTrade(signalId) {
   sendToBackend('WM_CONFIRM', { signalId });
-  const m = document.getElementById('wm-modal');
-  if (m) m.remove();
+  const m = document.getElementById('wm-modal'); if (m) m.remove();
   showToast('W/M trade confirmed', 'success');
 }
 
 function skipWMTrade(signalId) {
   sendToBackend('WM_SKIP', { signalId });
-  const m = document.getElementById('wm-modal');
-  if (m) m.remove();
+  const m = document.getElementById('wm-modal'); if (m) m.remove();
   showToast('W/M trade skipped', 'info');
 }
 
 async function loadSignals() {
   const dir = document.getElementById('signal-filter-dir')?.value || 'ALL';
-  const resFilter = document.getElementById('signal-filter-res')?.value || 'ALL';
-
-  const res = await fetch(`/api/signals?direction=${dir}&result=${resFilter}&limit=100`);
-  const data = await res.json();
+  const res = document.getElementById('signal-filter-res')?.value || 'ALL';
+  const r   = await fetch(`/api/signals?direction=${dir}&result=${res}&limit=100`);
+  const data = await r.json();
   if (data.signals) populateSignalTable(data.signals);
 }
 
@@ -738,62 +681,149 @@ function populateSignalTable(signals) {
   const tbody = document.getElementById('signals-tbody');
   if (!tbody) return;
   tbody.innerHTML = '';
-
-  signals.forEach((sig, idx) => {
-    tbody.insertAdjacentHTML('beforeend', createSignalRow(sig, idx + 1));
-  });
+  signals.forEach((sig, idx) => tbody.insertAdjacentHTML('beforeend', createSignalRow(sig, idx+1)));
 }
 
 function createSignalRow(sig, rank) {
   return `<tr>
     <td>${rank}</td>
-    <td class="time-cell">${sig.signalCandleCloseDateTimeUTC || 'N/A'}</td>
-    <td class="time-cell">${sig.dateTimeUTC || 'N/A'}</td>
-    <td>${(sig.exchange || 'binance').toUpperCase()}</td>
+    <td class="time-cell">${sig.signalCandleCloseDateTimeUTC||'N/A'}</td>
+    <td class="time-cell">${sig.dateTimeUTC||'N/A'}</td>
+    <td>${(sig.exchange||'binance').toUpperCase()}</td>
     <td><strong>${sig.symbol}</strong></td>
-    <td>${sig.timeframe || '4h'}</td>
-    <td class="${sig.direction === 'LONG' ? 'green' : 'red'}">${sig.direction === 'LONG' ? '▲ LONG' : '▼ SHORT'}</td>
-    <td>$${formatPrice(sig.ema9)}</td>
-    <td>$${formatPrice(sig.ema55)}</td>
-    <td>$${formatPrice(sig.ema200)}</td>
+    <td>${sig.timeframe||'4h'}</td>
+    <td class="${sig.direction==='LONG'?'green':'red'}">${sig.direction==='LONG'?'▲ LONG':'▼ SHORT'}</td>
+    <td>$${formatPrice(sig.ema9)}</td><td>$${formatPrice(sig.ema55)}</td><td>$${formatPrice(sig.ema200)}</td>
     <td>$${formatPrice(sig.signalCandleClose)}</td>
-    <td>${sig.adxAtSignal?.toFixed(1) || 'N/A'}</td>
-    <td>${sig.rsiAtSignal?.toFixed(1) || 'N/A'}</td>
-    <td>${sig.volumeRatio?.toFixed(1) || '1.0'}×</td>
-    <td class="${sig.gate1 === 'PASS' ? 'green' : 'red'}">${sig.gate1 === 'PASS' ? '✅' : '❌'}</td>
-    <td class="${sig.gate2 === 'PASS' ? 'green' : 'red'}">${sig.gate2 === 'PASS' ? '✅' : '❌'}</td>
-    <td class="${sig.gate3 === 'PASS' ? 'green' : 'red'}">${sig.gate3 === 'PASS' ? '✅' : '❌'}</td>
-    <td class="${sig.gate4 === 'PASS' ? 'green' : 'red'}">${sig.gate4 === 'PASS' ? '✅' : '❌'}</td>
-    <td>${sig.wmPattern || '—'}</td>
-    <td>${sig.tradeFired ? '🟢 YES' : '🔴 NO'}</td>
+    <td>${sig.adxAtSignal?.toFixed(1)||'N/A'}</td>
+    <td>${sig.rsiAtSignal?.toFixed(1)||'N/A'}</td>
+    <td>${sig.volumeRatio?.toFixed(1)||'1.0'}×</td>
+    <td class="${sig.gate1==='PASS'?'green':'red'}">${sig.gate1==='PASS'?'✅':'❌'}</td>
+    <td class="${sig.gate2==='PASS'?'green':'red'}">${sig.gate2==='PASS'?'✅':'❌'}</td>
+    <td class="${sig.gate3==='PASS'?'green':'red'}">${sig.gate3==='PASS'?'✅':'❌'}</td>
+    <td class="${sig.gate4==='PASS'?'green':'red'}">${sig.gate4==='PASS'?'✅':'❌'}</td>
+    <td>${sig.wmPattern||'—'}</td>
+    <td>${sig.tradeFired?'🟢 YES':'🔴 NO'}</td>
     <td>${sig.scoreAtSignal}</td>
     <td>$${formatPrice(sig.signalCandleClose)}</td>
-    <td>—</td>
-    <td>—</td>
-    <td>${sig.tradeOutcome || '—'}</td>
-    <td class="${(sig.tradePnL || 0) >= 0 ? 'green' : 'red'}">${sig.tradePnL !== null ? (sig.tradePnL >= 0 ? '+' : '') + '$' + sig.tradePnL.toFixed(2) : '—'}</td>
-    <td class="${(sig.tradePnLPct || 0) >= 0 ? 'green' : 'red'}">${sig.tradePnLPct !== null ? sig.tradePnLPct.toFixed(2) + '%' : '—'}</td>
+    <td>${sig.tradeExitPrice?'$'+formatPrice(sig.tradeExitPrice):'—'}</td>
+    <td class="time-cell">${sig.tradeClosedAt||'—'}</td>
+    <td>${sig.tradeOutcome||'—'}</td>
+    <td class="${(sig.tradePnL||0)>=0?'green':'red'}">${sig.tradePnL!=null?(sig.tradePnL>=0?'+':'')+'$'+sig.tradePnL.toFixed(2):'—'}</td>
+    <td class="${(sig.tradePnLPct||0)>=0?'green':'red'}">${sig.tradePnLPct!=null?sig.tradePnLPct.toFixed(2)+'%':'—'}</td>
   </tr>`;
 }
 
 function handleNewSignal(signal) {
-  showToast(`📡 Signal Detected: ${signal.symbol} ${signal.direction} (Score: ${signal.scoreAtSignal})`, 'info');
+  showToast(`📡 Signal: ${signal.symbol} ${signal.direction} (Score: ${signal.scoreAtSignal})`, 'info');
   loadSignals();
 }
 
 function updateGateLog(logs) {
   const feed = document.getElementById('gate-log-feed');
-  if (!feed) return;
-
-  feed.innerHTML = logs.map(l => `<div>[${l.timeUTC}] ${l.symbol} -> ${l.action} ${l.reason ? '(' + l.reason + ')' : ''}</div>`).reverse().join('');
+  if (feed) feed.innerHTML = logs.map(l => `<div>[${l.timeUTC}] ${l.symbol} → ${l.action} ${l.reason?'('+l.reason+')':''}</div>`).reverse().join('');
 }
+
+// ── Multi-market tab handlers ─────────────────────────────────────
+
+function handleMarketScannerUpdate(data) {
+  const { market, coins } = data;
+  if (!market || !coins) return;
+  marketCoins[market] = coins;
+  renderMarketTable(market, coins);
+  const readyEl = document.getElementById(`${market}-ready-count`);
+  if (readyEl) readyEl.textContent = coins.filter(c => c.status === 'READY').length;
+  const countEl = document.getElementById(`${market}-coin-count`);
+  if (countEl) countEl.textContent = coins.length;
+}
+
+function handleMarketTradeOpened(data) {
+  const { market, trade } = data;
+  if (!market || !trade) return;
+  marketTrades[market] = marketTrades[market] || [];
+  if (!marketTrades[market].some(t => t.id === trade.id)) marketTrades[market].push(trade);
+  const grid = document.getElementById(`${market}-positions-grid`);
+  if (grid) grid.insertAdjacentHTML('afterbegin', createMarketTradeCard(market, trade));
+  const panel = document.getElementById(`${market}-positions`);
+  if (panel) panel.style.display = 'block';
+  const countEl = document.getElementById(`${market}-positions-count`);
+  if (countEl) countEl.textContent = marketTrades[market].length;
+  const tradesEl = document.getElementById(`${market}-trades-count`);
+  if (tradesEl) tradesEl.textContent = marketTrades[market].length;
+  showToast(`${market.toUpperCase()} Trade: ${trade.symbol} ${trade.direction}`, 'success');
+}
+
+function renderMarketTable(marketId, coins) {
+  const tbody = document.getElementById(`${marketId}-tbody`);
+  if (!tbody) return;
+  tbody.innerHTML = '';
+  coins.forEach((coin, idx) => {
+    const dir       = coin.direction === 'LONG' ? '<span class="dir-long">▲ LONG</span>' : '<span class="dir-short">▼ SHORT</span>';
+    const adxClass  = !coin.adx ? 'dim' : coin.adx >= 25 ? 'green' : coin.adx >= 20 ? 'amber' : 'red';
+    const rsiClass  = coin.rsi >= 30 && coin.rsi <= 70 ? 'green' : 'amber';
+    const volClass  = coin.volumeRatio >= 1.3 ? 'green' : coin.volumeRatio >= 1.0 ? 'amber' : 'dim';
+    const statusBadge = coin.status === 'READY'
+      ? '<span class="badge badge-active">✅ READY</span>'
+      : '<span class="dim">Watching</span>';
+    tbody.insertAdjacentHTML('beforeend', `<tr class="${coin.isRanging?'row-ranging':coin.status==='READY'?'row-all-gates':''}">
+      <td>${idx+1}</td>
+      <td><strong>${coin.displayName || coin.symbol}</strong><br><span class="dim" style="font-size:0.7rem;">${coin.symbol}</span></td>
+      <td class="mono">$${formatPrice(coin.price)}</td>
+      <td class="${(coin.change24h||0)>=0?'green':'red'}">${(coin.change24h||0)>=0?'+':''}${(coin.change24h||0).toFixed(2)}%</td>
+      <td class="${getScoreClass(coin.score)}">${coin.score||'—'}</td>
+      <td>${dir}</td>
+      <td class="mono dim">${coin.ema9?.toFixed(2)||'—'}</td>
+      <td class="mono dim">${coin.ema55?.toFixed(2)||'—'}</td>
+      <td class="${coin.emaRelationship==='ABOVE'?'green':'red'}">${coin.emaRelationship||'—'}</td>
+      <td class="${adxClass}">${coin.adx?.toFixed(1)||'N/A'}</td>
+      <td class="${rsiClass}">${coin.rsi?.toFixed(1)||'N/A'}</td>
+      <td class="${volClass}">${coin.volumeRatio?.toFixed(1)||'—'}×</td>
+      <td class="${coin.gate1==='PASS'?'green':'red'}">${coin.gate1==='PASS'?'✅':'❌'}</td>
+      <td class="${coin.gate2==='PASS'?'green':'red'}">${coin.gate2==='PASS'?'✅':'❌'}</td>
+      <td class="${coin.gate3==='PASS'?'green':'red'}">${coin.gate3==='PASS'?'✅':'❌'}</td>
+      <td class="${coin.gate4==='PASS'?'green':'red'}">${coin.gate4==='PASS'?'✅':'❌'}</td>
+      <td>${statusBadge}</td>
+    </tr>`);
+  });
+}
+
+function createMarketTradeCard(marketId, trade) {
+  const dirClass = trade.direction === 'LONG' ? 'dir-long' : 'dir-short';
+  return `<div class="trade-card" id="${marketId}-card-${trade.id}" style="border-left-color:var(--blue);">
+    <div class="trade-card-header">
+      <span class="trade-symbol">${trade.symbol}</span>
+      <span class="trade-direction ${dirClass}">${trade.direction==='LONG'?'▲':'▼'} ${trade.direction}</span>
+      <span class="trade-trigger">${trade.trigger||''}</span>
+      <span class="badge" style="background:var(--blue);">📄 PAPER</span>
+    </div>
+    <div class="trade-prices">
+      <div>Entry: <strong>$${formatPrice(trade.entryPrice)}</strong></div>
+      <div>SL: $${formatPrice(trade.stopLoss)} | TP1: $${formatPrice(trade.tp1)}</div>
+    </div>
+    <div>Score: ${trade.scoreAtEntry}/100 | Pos: $${trade.positionValue}</div>
+    <div class="trade-timestamps">${trade.openedAtUTC}</div>
+  </div>`;
+}
+
+async function triggerMarketScan(marketId) {
+  showToast(`Triggering ${marketId.toUpperCase()} scan...`, 'info');
+  try {
+    const res  = await fetch(`/api/markets/${marketId}/scan-now`, { method: 'POST' });
+    const data = await res.json();
+    if (data.success) showToast(`${marketId.toUpperCase()} scan complete (${data.coinCount} symbols)`, 'success');
+    else showToast(`Scan error: ${data.error}`, 'error');
+  } catch (e) {
+    showToast('Scan failed: ' + e.message, 'error');
+  }
+}
+
+// ── Chart overlay ─────────────────────────────────────────────────
 
 async function openChartOverlay(symbol) {
   document.getElementById('chart-symbol-title').textContent = symbol;
   document.getElementById('chart-overlay').style.display = 'flex';
   window.chartOverlayOpen = true;
-
-  const res = await fetch(`/api/candles?symbol=${symbol}&timeframe=${activeTimeframe}&limit=300`);
+  const res  = await fetch(`/api/candles?symbol=${symbol}&timeframe=${activeTimeframe}&limit=300`);
   const data = await res.json();
   initMainChart('chart-container', data);
 }
@@ -803,23 +833,46 @@ function closeChartOverlay() {
   window.chartOverlayOpen = false;
 }
 
+// ── Tab navigation ────────────────────────────────────────────────
+
 function setupTabNavigation() {
   document.querySelectorAll('.tab-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
       document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-
       btn.classList.add('active');
       const tabId = 'tab-' + btn.dataset.tab;
       const tabContent = document.getElementById(tabId);
       if (tabContent) tabContent.classList.add('active');
-
-      if (btn.dataset.tab === 'signals') loadSignals();
-      if (btn.dataset.tab === 'analytics') loadAnalyticsData();
-      if (btn.dataset.tab === 'settings') populateSettingsForm();
+      if (btn.dataset.tab === 'signals')    loadSignals();
+      if (btn.dataset.tab === 'analytics')  loadAnalyticsData();
+      if (btn.dataset.tab === 'settings')   populateSettingsForm();
+      if (btn.dataset.tab === 'tradelog')   loadTradeLog();
+      // Load market data when switching to market tabs
+      if (['nse','commodities','nasdaq'].includes(btn.dataset.tab)) {
+        loadMarketTab(btn.dataset.tab);
+      }
     });
   });
 }
+
+async function loadMarketTab(marketId) {
+  try {
+    const res  = await fetch(`/api/markets/${marketId}`);
+    const data = await res.json();
+    if (data.coins?.length > 0) {
+      marketCoins[marketId] = data.coins;
+      renderMarketTable(marketId, data.coins);
+      const readyEl = document.getElementById(`${marketId}-ready-count`);
+      if (readyEl) readyEl.textContent = data.coins.filter(c => c.status === 'READY').length;
+    }
+    if (data.heartbeat) handleMarketHeartbeat({ market: marketId, heartbeat: data.heartbeat });
+  } catch (err) {
+    console.warn(`[${marketId}] Load error:`, err.message);
+  }
+}
+
+// ── Timeframe / Settings ──────────────────────────────────────────
 
 function setupTimeframeSelector() {
   document.querySelectorAll('.tf-btn').forEach(btn => {
@@ -836,24 +889,20 @@ function setupTimeframeSelector() {
 function handleSettingsUpdated(settings) {
   if (!settings) return;
   appSettings = settings;
-
   if (settings.timeframe) {
     setActiveTimeframe(settings.timeframe);
     const tfSelect = document.getElementById('set-timeframe');
     if (tfSelect) tfSelect.value = settings.timeframe;
   }
-
   if (settings.autoTradeEnabled !== undefined) {
-    const autoTradeCheck = document.getElementById('set-autotrade');
-    if (autoTradeCheck) autoTradeCheck.checked = settings.autoTradeEnabled;
+    const el = document.getElementById('set-autotrade');
+    if (el) el.checked = settings.autoTradeEnabled;
   }
-
   if (settings.scanCoins !== undefined) {
-    const scanCoinsEl = document.getElementById('set-scancoins');
-    if (scanCoinsEl) scanCoinsEl.value = settings.scanCoins;
+    const el = document.getElementById('set-scancoins');
+    if (el) el.value = settings.scanCoins;
   }
-
-  showToast(`⚙️ Settings synced with backend engine (TF: ${settings.timeframe || activeTimeframe})`, 'info');
+  showToast(`⚙️ Settings synced (TF: ${settings.timeframe || activeTimeframe})`, 'info');
 }
 
 function setupSettingsHandlers() {
@@ -864,19 +913,18 @@ function setupSettingsHandlers() {
         autoTradeEnabled: document.getElementById('set-autotrade')?.checked,
         timeframe: document.getElementById('set-timeframe')?.value,
         scanCoins: parseInt(document.getElementById('set-scancoins')?.value || 50),
-        exchange: document.getElementById('set-exchange')?.value,
+        exchange:  document.getElementById('set-exchange')?.value,
         deltaMode: document.getElementById('set-deltamode')?.value,
         trade: {
-          positionSizePct: parseFloat(document.getElementById('set-possize')?.value || 5),
-          leverage: parseInt(document.getElementById('set-leverage')?.value || 10),
-          maxConcurrentTrades: parseInt(document.getElementById('set-maxtrades')?.value || 3)
+          positionSizePct:    parseFloat(document.getElementById('set-possize')?.value   || 5),
+          leverage:           parseInt(document.getElementById('set-leverage')?.value     || 10),
+          maxConcurrentTrades:parseInt(document.getElementById('set-maxtrades')?.value   || 3)
         },
         telegram: {
           botToken: document.getElementById('set-tgtoken')?.value,
-          chatId: document.getElementById('set-tgchatid')?.value
+          chatId:   document.getElementById('set-tgchatid')?.value
         }
       };
-
       sendToBackend('UPDATE_SETTINGS', payload);
       showToast('Settings saved & backend engine synced', 'success');
     });
@@ -885,129 +933,110 @@ function setupSettingsHandlers() {
   const resetBalBtn = document.getElementById('reset-balance');
   if (resetBalBtn) {
     resetBalBtn.addEventListener('click', async () => {
-      const res = await fetch('/api/settings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ resetDemoBalance: true })
-      });
+      const res = await fetch('/api/settings', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ resetDemoBalance: true }) });
       const data = await res.json();
-      if (data.success) {
-        showToast('Demo balance reset to $10,000.00', 'success');
-      }
+      if (data.success) showToast('Demo balance reset to $10,000.00', 'success');
     });
   }
 
   const tgTestBtn = document.getElementById('test-telegram');
   if (tgTestBtn) {
     tgTestBtn.addEventListener('click', async () => {
-      const token = document.getElementById('set-tgtoken')?.value;
+      const token  = document.getElementById('set-tgtoken')?.value;
       const chatId = document.getElementById('set-tgchatid')?.value;
-      const res = await fetch('/api/telegram/test', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ botToken: token, chatId })
-      });
-      const data = await res.json();
+      const res    = await fetch('/api/telegram/test', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ botToken: token, chatId }) });
+      const data   = await res.json();
       if (data.success) showToast('Telegram test alert sent!', 'success');
       else showToast('Telegram error: ' + data.error, 'error');
     });
   }
 }
 
-async function runBacktestJob() {
-  const symbol = document.getElementById('bt-symbol')?.value || 'BTCUSDT';
-  const timeframe = document.getElementById('bt-tf')?.value || '4h';
-  const strategyType = document.getElementById('bt-strategy')?.value || 'full';
+// ── Debug helpers ─────────────────────────────────────────────────
 
-  document.getElementById('bt-progress-wrapper').style.display = 'block';
-
-  await fetch('/api/backtest', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ symbol, timeframe, strategyType })
-  });
-}
-
-function updateBacktestProgress(data) {
-  const bar = document.getElementById('bt-progress-bar');
-  if (bar) bar.style.width = (data.pct || 0) + '%';
-  const status = document.getElementById('bt-progress-status');
-  if (status) status.textContent = data.message || `Simulating candle ${data.candle || 0}/${data.total || 0}...`;
-}
-
-function showBacktestResults(results) {
-  document.getElementById('bt-progress-wrapper').style.display = 'none';
-  document.getElementById('bt-results').style.display = 'block';
-
-  const s = results.summary;
-  const grid = document.getElementById('bt-summary-grid');
-  if (grid) {
-    grid.innerHTML = `
-      <div class="settings-card">
-        <div>Period: ${s.period.start} to ${s.period.end}</div>
-        <div>Start Balance: $10,000 | Final Balance: <strong>$${s.finalBalance}</strong></div>
-        <div>Total Return: <strong class="green">+${s.totalReturn}%</strong></div>
-        <div>Win Rate: <strong>${s.winRate}%</strong> (${s.tradesTaken} trades)</div>
-        <div>Profit Factor: <strong>${s.profitFactor}</strong></div>
-        <div>Max Drawdown: <strong class="red">${s.maxDrawdown}%</strong></div>
-      </div>`;
+async function runAPITest() {
+  const resEl = document.getElementById('api-test-results');
+  if (resEl) resEl.textContent = 'Testing...';
+  try {
+    const status = await fetch('/api/status').then(r => r.json());
+    const hb     = status.scanHeartbeat || {};
+    resEl.innerHTML = `✅ Server: ${status.status} (${status.uptimeFormatted})<br>
+      ✅ WebSocket: ${status.binanceWSStatus}<br>
+      ✅ Rate Limit: ${status.rateLimitUsed}/1200<br>
+      ✅ Scan: ${hb.status} (${hb.coinCount||0} coins, ${hb.durationMs||0}ms)<br>
+      ✅ Markets: NSE/Commodities/NASDAQ — see /api/markets/status`;
+  } catch (e) {
+    resEl.innerHTML = `❌ API Test Error: ${e.message}`;
   }
-  showToast('Backtest complete!', 'success');
+}
+
+async function loadHeartbeatDebug() {
+  const resEl = document.getElementById('heartbeat-debug-results');
+  try {
+    const hb = await fetch('/api/scanner/heartbeat').then(r => r.json());
+    resEl.innerHTML = `Status: ${hb.status}<br>Last: ${hb.minutesAgo != null ? hb.minutesAgo + 'm ago' : '—'}<br>Duration: ${hb.durationMs ? (hb.durationMs/1000).toFixed(1)+'s' : '—'}<br>Coins: ${hb.coinCount||0}<br>Error: ${hb.error || 'none'}`;
+  } catch (e) {
+    resEl.innerHTML = `Error: ${e.message}`;
+  }
 }
 
 async function triggerScanNow() {
-  showToast('⚡ Triggering full 50-coin market scan...', 'info');
+  showToast('⚡ Triggering full market scan...', 'info');
   try {
     const res = await fetch('/api/scanner/scan-now', { method: 'POST' });
     const data = await res.json();
-    if (data.success) {
-      showToast(`Scan complete (${data.count} coins recalculated)`, 'success');
-    }
+    if (data.success) showToast(`Scan complete (${data.count} coins)`, 'success');
   } catch (e) {
     showToast('Scan error: ' + e.message, 'error');
   }
 }
 
 async function fireTestTradeFromUI() {
-  showToast('⚡ Firing immediate paper trade (BTCUSDT LONG)...', 'info');
+  showToast('⚡ Firing test trade (BTCUSDT LONG)...', 'info');
   try {
-    const res = await fetch('/api/trades/test', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ symbol: 'BTCUSDT', direction: 'LONG' })
-    });
+    const res = await fetch('/api/trades/test', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ symbol:'BTCUSDT', direction:'LONG' }) });
     const data = await res.json();
-    if (data.success) {
-      showToast('✅ Trade Fired! Monitoring live PnL...', 'success');
-    }
+    if (data.success) showToast('✅ Test Trade Fired!', 'success');
   } catch (e) {
-    showToast('Failed to fire trade: ' + e.message, 'error');
+    showToast('Failed: ' + e.message, 'error');
   }
 }
 
-async function runAPITest() {
-  const resEl = document.getElementById('api-test-results');
-  if (resEl) resEl.textContent = 'Testing API connectivity...';
+async function runBacktestJob() {
+  const symbol = document.getElementById('bt-symbol')?.value || 'BTCUSDT';
+  const tf     = document.getElementById('bt-tf')?.value     || '4h';
+  const strat  = document.getElementById('bt-strategy')?.value || 'full';
+  document.getElementById('bt-progress-wrapper').style.display = 'block';
+  await fetch('/api/backtest', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ symbol, timeframe: tf, strategyType: strat }) });
+}
 
-  try {
-    const status = await fetch('/api/status').then(r => r.json());
-    resEl.innerHTML = `✅ Server Status: ${status.status} (Uptime: ${status.uptimeFormatted})<br>
-                       ✅ Binance WS: ${status.binanceWSStatus}<br>
-                       ✅ Rate Limit: ${status.rateLimitUsed}/1200`;
-  } catch (e) {
-    resEl.innerHTML = `❌ API Test Error: ${e.message}`;
-  }
+function updateBacktestProgress(data) {
+  const bar    = document.getElementById('bt-progress-bar');
+  if (bar) bar.style.width = (data.pct || 0) + '%';
+  const status = document.getElementById('bt-progress-status');
+  if (status) status.textContent = data.message || `Candle ${data.candle||0}/${data.total||0}...`;
+}
+
+function showBacktestResults(results) {
+  document.getElementById('bt-progress-wrapper').style.display = 'none';
+  document.getElementById('bt-results').style.display = 'block';
+  const s    = results.summary;
+  const grid = document.getElementById('bt-summary-grid');
+  if (grid) grid.innerHTML = `<div class="settings-card">
+    <div>Period: ${s.period.start} to ${s.period.end}</div>
+    <div>Start $10,000 → <strong>$${s.finalBalance}</strong></div>
+    <div>Return: <strong class="green">+${s.totalReturn}%</strong></div>
+    <div>Win Rate: <strong>${s.winRate}%</strong> (${s.tradesTaken} trades)</div>
+    <div>Profit Factor: <strong>${s.profitFactor}</strong></div>
+    <div>Max Drawdown: <strong class="red">${s.maxDrawdown}%</strong></div>
+  </div>`;
+  showToast('Backtest complete!', 'success');
 }
 
 async function fireTestTrade() {
-  const symbol = document.getElementById('test-trade-symbol')?.value || 'BTCUSDT';
+  const symbol    = document.getElementById('test-trade-symbol')?.value || 'BTCUSDT';
   const direction = document.getElementById('test-trade-direction')?.value || 'LONG';
-
-  const res = await fetch('/api/trades/test', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ symbol, direction })
-  });
+  const res  = await fetch('/api/trades/test', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ symbol, direction }) });
   const data = await res.json();
   const resEl = document.getElementById('test-trade-result');
   if (resEl) resEl.textContent = JSON.stringify(data, null, 2);
@@ -1016,24 +1045,20 @@ async function fireTestTrade() {
 function exportSignalsCSV() {
   fetch('/api/signals?limit=1000').then(r => r.json()).then(data => {
     const headers = ['Symbol','Direction','Timeframe','SignalTime','Gate1','Gate2','Gate3','Gate4','Score','TradeFired','PnL'];
-    const rows = (data.signals || []).map(s => [
-      s.symbol, s.direction, s.timeframe, s.dateTimeUTC,
-      s.gate1, s.gate2, s.gate3, s.gate4, s.scoreAtSignal, s.tradeFired ? 'YES' : 'NO', s.tradePnL || 0
-    ]);
-    const csv = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
-    const blob = new Blob([csv], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'signals_export.csv';
-    a.click();
+    const rows    = (data.signals || []).map(s => [s.symbol, s.direction, s.timeframe, s.dateTimeUTC, s.gate1, s.gate2, s.gate3, s.gate4, s.scoreAtSignal, s.tradeFired?'YES':'NO', s.tradePnL||0]);
+    const csv     = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+    const blob    = new Blob([csv], { type: 'text/csv' });
+    const url     = URL.createObjectURL(blob);
+    const a       = document.createElement('a'); a.href = url; a.download = 'signals_export.csv'; a.click();
   });
 }
+
+// ── Utilities ─────────────────────────────────────────────────────
 
 function formatPrice(price) {
   if (!price || isNaN(price)) return '0.00';
   if (price >= 1000) return price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  if (price >= 1) return price.toFixed(4);
+  if (price >= 1)    return price.toFixed(4);
   return price.toFixed(6);
 }
 
@@ -1047,150 +1072,88 @@ function getScoreClass(score) {
   return 'score-poor';
 }
 
-function getADXClass(adx) {
-  if (!adx) return 'dim';
-  if (adx >= 25) return 'green';
-  if (adx >= 20) return 'amber';
-  return 'red';
-}
-
-function getRSIClass(rsi) {
-  if (rsi === undefined || rsi === null) return 'dim';
-  if (rsi >= 30 && rsi <= 65) return 'green';
-  if ((rsi > 65 && rsi <= 75) || (rsi >= 25 && rsi < 30)) return 'amber';
-  return 'red';
-}
-
-function getVolClass(ratio) {
-  if (!ratio) return 'dim';
-  if (ratio >= 1.5) return 'green';
-  if (ratio >= 1.0) return 'amber';
-  return 'red';
-}
-
 function renderStatusBadges(coin) {
   const badges = [];
-  if (coin.openTrade) badges.push('<span class="badge badge-active">🟢 TRADE</span>');
-  if (coin.wmState === 'READY') badges.push('<span class="badge badge-wm-ready">⚡ ' + coin.wmType + ' READY</span>');
-  if (coin.wmState === 'FORMING') badges.push('<span class="badge badge-wm-forming">👀 ' + coin.wmType + ' FORMING</span>');
-  if (coin.isRanging) badges.push('<span class="badge badge-ranging">🟠 RANGING</span>');
-  if (coin.isChoppy) badges.push('<span class="badge badge-choppy">⚡ CHOPPY</span>');
-  if (coin.volatilitySpike) badges.push('<span class="badge badge-spike">⚡ VOL SPIKE</span>');
-  if (coin.flatSlope) badges.push('<span class="badge badge-flat">⚠️ FLAT</span>');
-  if (coin.staleSignal) badges.push('<span class="badge badge-stale">🕐 STALE</span>');
+  if (coin.openTrade)          badges.push('<span class="badge badge-active">🟢 TRADE</span>');
+  if (coin.wmState === 'READY') badges.push(`<span class="badge badge-wm-ready">⚡ ${coin.wmType} READY</span>`);
+  if (coin.wmState === 'FORMING') badges.push(`<span class="badge badge-wm-forming">👀 ${coin.wmType} FORMING</span>`);
+  if (coin.isRanging)          badges.push('<span class="badge badge-ranging">🟠 RANGING</span>');
+  if (coin.flatSlope)          badges.push('<span class="badge badge-flat">⚠️ FLAT</span>');
   return badges.join('') || '<span class="dim">—</span>';
 }
 
 function renderWMBadge(state, type) {
   if (!state || state === 'WATCHING') return '<span class="dim">—</span>';
-  const icons = { FORMING: '👀', READY: '⚡', CONFIRMED: '✅' };
+  const icons   = { FORMING: '👀', READY: '⚡', CONFIRMED: '✅' };
   const classes = { FORMING: 'wm-forming', READY: 'wm-ready', CONFIRMED: 'wm-confirmed' };
-  return `<span class="badge ${classes[state] || ''}">${icons[state] || ''} ${type || ''} ${state}</span>`;
+  return `<span class="badge ${classes[state]||''}">${icons[state]||''} ${type||''} ${state}</span>`;
 }
 
 function getOutcomeDisplay(outcome) {
-  const map = {
-    'TP1': '🎯 TP1', 'TP2': '🎯 TP2', 'TP3': '🎯 TP3',
-    'SL': '🛡 SL', 'TRAILING': '🔒 Trail',
-    'TIME_EXIT': '⏱ Time', 'MANUAL': '👋 Manual'
-  };
-  return map[outcome] || outcome;
+  const map = { 'TP1':'🎯 TP1','TP2':'🎯 TP2','TP3':'🎯 TP3','SL':'🛡 SL','TRAILING':'🔒 Trail','TIME_EXIT':'⏱ Time','MANUAL':'👋 Manual' };
+  return map[outcome] || outcome || '—';
 }
 
 function showToast(message, type = 'info', duration = 5000) {
-  const container = document.getElementById('toast-container') ||
-    (() => {
-      const div = document.createElement('div');
-      div.id = 'toast-container';
-      document.body.appendChild(div);
-      return div;
-    })();
-
+  const container = document.getElementById('toast-container') || (() => {
+    const div = document.createElement('div'); div.id = 'toast-container'; document.body.appendChild(div); return div;
+  })();
   const toast = document.createElement('div');
   toast.className = 'toast toast-' + type;
   toast.textContent = message;
-
   container.appendChild(toast);
   setTimeout(() => toast.remove(), duration);
 }
 
-function showAlert(data) {
-  showToast(data.message || 'Alert', data.level || 'info');
-}
+function showAlert(data) { showToast(data.message || 'Alert', data.level || 'info'); }
 
 function handleWMStateChange(data) {
   const coin = scannerCoins.find(c => c.symbol === data.symbol);
-  if (coin) {
-    coin.wmState = data.state;
-    coin.wmType = data.type;
-    updateScannerRow(coin);
-  }
+  if (coin) { coin.wmState = data.state; coin.wmType = data.type; updateScannerRow(coin); }
 }
 
 function handleRangingDetected(data) {
-  showToast('🟠 Ranging detected: ' + data.symbol + (data.reason ? ' — ' + data.reason : ''), 'warning');
+  showToast('🟠 Ranging: ' + data.symbol + (data.reason ? ' — ' + data.reason : ''), 'warning');
   const coin = scannerCoins.find(c => c.symbol === data.symbol);
-  if (coin) {
-    coin.isRanging = true;
-    updateScannerRow(coin);
-  }
+  if (coin) { coin.isRanging = true; updateScannerRow(coin); }
 }
 
 function setActiveTimeframe(tf) {
   activeTimeframe = tf;
-  document.querySelectorAll('.tf-btn').forEach(btn => {
-    btn.classList.toggle('active', btn.dataset.tf === tf);
-  });
+  document.querySelectorAll('.tf-btn').forEach(btn => btn.classList.toggle('active', btn.dataset.tf === tf));
 }
 
 function handleSystemStatus(status) {
   const scanEl = document.getElementById('last-scan-time');
-  if (scanEl && status.lastScanTime) {
-    scanEl.textContent = status.lastScanTime.split(' ')[1] || status.lastScanTime;
-  }
-  if (status.binanceConnected !== undefined) {
-    updateConnectionBadge(status.binanceConnected ? 'connected' : 'disconnected');
-  }
+  if (scanEl && status.lastScanTime) scanEl.textContent = status.lastScanTime.split(' ')[1] || status.lastScanTime;
+  if (status.binanceConnected !== undefined) updateConnectionBadge(status.binanceConnected ? 'connected' : 'disconnected');
   const openCount = document.getElementById('open-trades-count');
-  if (openCount && status.openTradesCount !== undefined) {
-    openCount.textContent = status.openTradesCount;
-  }
+  if (openCount && status.openTradesCount !== undefined) openCount.textContent = status.openTradesCount;
+  if (status.scanHeartbeat) handleScanHeartbeat(status.scanHeartbeat);
 }
 
 function setupFilterListeners() {
-  ['search-coin', 'filter-direction', 'filter-status', 'filter-score'].forEach(id => {
+  ['search-coin','filter-direction','filter-status','filter-score'].forEach(id => {
     const el = document.getElementById(id);
-    if (el) {
-      el.addEventListener('input', () => renderScannerTable());
-      el.addEventListener('change', () => renderScannerTable());
-    }
+    if (el) { el.addEventListener('input', renderScannerTable); el.addEventListener('change', renderScannerTable); }
   });
-
-  ['signal-search', 'signal-filter-dir', 'signal-filter-res'].forEach(id => {
+  ['signal-search','signal-filter-dir','signal-filter-res'].forEach(id => {
     const el = document.getElementById(id);
-    if (el) {
-      el.addEventListener('input', () => filterSignalsTable());
-      el.addEventListener('change', () => filterSignalsTable());
-    }
+    if (el) { el.addEventListener('input', filterSignalsTable); el.addEventListener('change', filterSignalsTable); }
   });
 }
 
 function filterSignalsTable() {
-  const search = (document.getElementById('signal-search')?.value || '').toLowerCase();
+  const search    = (document.getElementById('signal-search')?.value || '').toLowerCase();
   const dirFilter = document.getElementById('signal-filter-dir')?.value || 'ALL';
   const resFilter = document.getElementById('signal-filter-res')?.value || 'ALL';
-
-  const rows = document.querySelectorAll('#signals-tbody tr');
-  rows.forEach(row => {
+  document.querySelectorAll('#signals-tbody tr').forEach(row => {
     const text = row.textContent.toLowerCase();
-    const matchesSearch = !search || text.includes(search);
-    const matchesDir = dirFilter === 'ALL' || text.includes(dirFilter.toLowerCase());
-    const matchesRes = resFilter === 'ALL' || (
-      resFilter === 'FIRED' ? text.includes('yes') :
-      resFilter === 'SKIPPED' ? text.includes('no') : true
-    );
-
-    row.style.display = (matchesSearch && matchesDir && matchesRes) ? '' : 'none';
+    row.style.display = (
+      (!search || text.includes(search)) &&
+      (dirFilter === 'ALL' || text.includes(dirFilter.toLowerCase())) &&
+      (resFilter === 'ALL' || (resFilter === 'FIRED' ? text.includes('yes') : resFilter === 'SKIPPED' ? text.includes('no') : true))
+    ) ? '' : 'none';
   });
 }
 
@@ -1198,12 +1161,8 @@ function setupTableSorting() {
   document.querySelectorAll('#scanner-table th[data-column]').forEach(th => {
     th.addEventListener('click', () => {
       const col = th.dataset.column;
-      if (sortColumn === col) {
-        sortDirection = sortDirection === 'asc' ? 'desc' : 'asc';
-      } else {
-        sortColumn = col;
-        sortDirection = 'desc';
-      }
+      if (sortColumn === col) sortDirection = sortDirection === 'asc' ? 'desc' : 'asc';
+      else { sortColumn = col; sortDirection = 'desc'; }
       renderScannerTable();
     });
   });
@@ -1211,93 +1170,46 @@ function setupTableSorting() {
 
 async function loadAnalyticsData() {
   try {
-    const res = await fetch('/api/analytics');
+    const res  = await fetch('/api/analytics');
     const data = await res.json();
     if (!data) return;
-
     const cards = document.querySelectorAll('#tab-analytics .settings-card');
-    if (cards[0]) {
-      cards[0].innerHTML = `
-        <h4>Overview</h4>
-        <div>Profit Factor: <strong>${data.profitFactor || 1.34}</strong></div>
-        <div>Sharpe Ratio: <strong>${data.sharpeRatio || 1.84}</strong></div>
-        <div>Max Drawdown: <strong class="red">${data.maxDrawdown || 3.39}%</strong></div>
-        <div>Avg Trade Duration: <strong>${data.avgTradeDuration || '8.5 hours'}</strong></div>
-      `;
-    }
-
-    if (cards[1] && data.byDirection) {
-      cards[1].innerHTML = `
-        <h4>Direction Win Rates</h4>
-        <div>LONG: <span class="green">${data.byDirection.LONG?.winRate || 0}%</span> (${data.byDirection.LONG?.trades || 0} trades)</div>
-        <div>SHORT: <span class="green">${data.byDirection.SHORT?.winRate || 0}%</span> (${data.byDirection.SHORT?.trades || 0} trades)</div>
-      `;
-    }
-
-    if (cards[2] && data.byTrigger) {
-      cards[2].innerHTML = `
-        <h4>Trigger Win Rates</h4>
-        <div>4-Gate: <span class="green">${data.byTrigger['4-GATE']?.winRate || 0}%</span></div>
-        <div>W-Formation: <span class="green">${data.byTrigger['W-FORMATION']?.winRate || 0}%</span></div>
-        <div>M-Formation: <span class="amber">${data.byTrigger['M-FORMATION']?.winRate || 0}%</span></div>
-      `;
-    }
-  } catch (e) {
-    console.error('[ANALYTICS LOAD ERROR]', e.message);
-  }
+    if (cards[0]) cards[0].innerHTML = `<h4>Overview</h4>
+      <div>Profit Factor: <strong>${data.profitFactor||0}</strong></div>
+      <div>Sharpe Ratio: <strong>${data.sharpeRatio||0}</strong></div>
+      <div>Max Drawdown: <strong class="red">${data.maxDrawdown||0}%</strong></div>
+      <div>Avg Trade Duration: <strong>${data.avgTradeDuration||'—'}</strong></div>`;
+    if (cards[1] && data.byDirection) cards[1].innerHTML = `<h4>Direction Win Rates</h4>
+      <div>LONG: <span class="green">${data.byDirection.LONG?.winRate||0}%</span> (${data.byDirection.LONG?.trades||0} trades)</div>
+      <div>SHORT: <span class="green">${data.byDirection.SHORT?.winRate||0}%</span> (${data.byDirection.SHORT?.trades||0} trades)</div>`;
+    if (cards[2] && data.byTrigger) cards[2].innerHTML = `<h4>Trigger Win Rates</h4>
+      <div>4-Gate: <span class="green">${data.byTrigger['4-GATE']?.winRate||0}%</span></div>
+      <div>W-Formation: <span class="green">${data.byTrigger['W-FORMATION']?.winRate||0}%</span></div>
+      <div>M-Formation: <span class="amber">${data.byTrigger['M-FORMATION']?.winRate||0}%</span></div>`;
+  } catch (e) { console.error('[ANALYTICS]', e.message); }
 }
 
 function populateSettingsForm() {
   if (!appSettings) return;
-
-  const setAutoTrade = document.getElementById('set-autotrade');
-  if (setAutoTrade && appSettings.autoTradeEnabled !== undefined) {
-    setAutoTrade.checked = appSettings.autoTradeEnabled;
+  if (appSettings.autoTradeEnabled !== undefined) {
+    const el = document.getElementById('set-autotrade'); if (el) el.checked = appSettings.autoTradeEnabled;
   }
-
-  const setTimeframe = document.getElementById('set-timeframe');
-  if (setTimeframe && appSettings.timeframe) {
-    setTimeframe.value = appSettings.timeframe;
-  }
-
-  const setScanCoins = document.getElementById('set-scancoins');
-  if (setScanCoins && appSettings.scanCoins) {
-    setScanCoins.value = appSettings.scanCoins;
-  }
-
-  const setExchange = document.getElementById('set-exchange');
-  if (setExchange && appSettings.exchange) {
-    setExchange.value = appSettings.exchange;
-  }
-
-  const setDeltaMode = document.getElementById('set-deltamode');
-  if (setDeltaMode && appSettings.deltaMode) {
-    setDeltaMode.value = appSettings.deltaMode;
-  }
-
+  if (appSettings.timeframe)  { const el = document.getElementById('set-timeframe');  if (el) el.value = appSettings.timeframe; }
+  if (appSettings.scanCoins)  { const el = document.getElementById('set-scancoins');  if (el) el.value = appSettings.scanCoins; }
+  if (appSettings.exchange)   { const el = document.getElementById('set-exchange');   if (el) el.value = appSettings.exchange; }
+  if (appSettings.deltaMode)  { const el = document.getElementById('set-deltamode');  if (el) el.value = appSettings.deltaMode; }
   if (appSettings.trade) {
-    const setPosSize = document.getElementById('set-possize');
-    if (setPosSize && appSettings.trade.positionSizePct) setPosSize.value = appSettings.trade.positionSizePct;
-
-    const setLeverage = document.getElementById('set-leverage');
-    if (setLeverage && appSettings.trade.leverage) setLeverage.value = appSettings.trade.leverage;
-
-    const setMaxTrades = document.getElementById('set-maxtrades');
-    if (setMaxTrades && appSettings.trade.maxConcurrentTrades) setMaxTrades.value = appSettings.trade.maxConcurrentTrades;
+    if (appSettings.trade.positionSizePct)    { const el = document.getElementById('set-possize');  if (el) el.value = appSettings.trade.positionSizePct; }
+    if (appSettings.trade.leverage)           { const el = document.getElementById('set-leverage'); if (el) el.value = appSettings.trade.leverage; }
+    if (appSettings.trade.maxConcurrentTrades){ const el = document.getElementById('set-maxtrades');if (el) el.value = appSettings.trade.maxConcurrentTrades; }
   }
-
   if (appSettings.telegram) {
-    const setTgToken = document.getElementById('set-tgtoken');
-    if (setTgToken && appSettings.telegram.botToken) setTgToken.value = appSettings.telegram.botToken;
-
-    const setTgChatId = document.getElementById('set-tgchatid');
-    if (setTgChatId && appSettings.telegram.chatId) setTgChatId.value = appSettings.telegram.chatId;
+    if (appSettings.telegram.botToken) { const el = document.getElementById('set-tgtoken');  if (el) el.value = appSettings.telegram.botToken; }
+    if (appSettings.telegram.chatId)   { const el = document.getElementById('set-tgchatid'); if (el) el.value = appSettings.telegram.chatId; }
   }
 }
 
 window.toggleRanging = function() {
-  const wrapper = document.getElementById('ranging-table-wrapper');
-  if (wrapper) {
-    wrapper.style.display = (wrapper.style.display === 'none' || !wrapper.style.display) ? 'block' : 'none';
-  }
+  const w = document.getElementById('ranging-table-wrapper');
+  if (w) w.style.display = (w.style.display === 'none' || !w.style.display) ? 'block' : 'none';
 };

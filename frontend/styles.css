@@ -690,3 +690,54 @@ td {
   border-radius: 6px;
   font-size: 0.8rem;
 }
+
+/* ── Heartbeat badges ─────────────────────────────────────────── */
+.badge-hb-ok      { background: rgba(0,255,136,0.15); color: var(--green); border: 1px solid var(--green); }
+.badge-hb-running { background: rgba(0,136,255,0.15); color: var(--blue);  border: 1px solid var(--blue); }
+.badge-hb-error   { background: rgba(255,51,102,0.15);color: var(--red);   border: 1px solid var(--red); }
+.badge-hb-pending { background: rgba(255,170,0,0.12); color: var(--amber); border: 1px solid var(--amber); }
+
+/* ── Scan-status bar ──────────────────────────────────────────── */
+#scan-status-bar { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+.dim { color: var(--text-muted); }
+.amber { color: var(--amber); }
+
+/* ── Market tabs (NSE / Commodities / NASDAQ) ─────────────────── */
+.market-status-bar {
+  padding: 6px 12px;
+  background: var(--bg-surface2);
+  border-bottom: 1px solid var(--border);
+  font-size: 0.82rem;
+  display: flex; gap: 14px; align-items: center; flex-wrap: wrap;
+}
+.market-stats-row {
+  padding: 6px 12px;
+  display: flex; gap: 24px; align-items: center;
+  font-size: 0.85rem;
+  border-bottom: 1px solid var(--border);
+}
+.market-table { width: 100%; border-collapse: collapse; font-size: 0.78rem; }
+.market-table thead tr { background: var(--bg-surface2); }
+.market-table th, .market-table td {
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  white-space: nowrap;
+}
+.market-table tbody tr:hover { background: rgba(255,255,255,0.03); }
+
+/* ── Trade log table ──────────────────────────────────────────── */
+#tradelog-table { width: 100%; border-collapse: collapse; }
+#tradelog-table th, #tradelog-table td {
+  padding: 5px 9px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  white-space: nowrap;
+}
+#tradelog-table thead tr { background: var(--bg-surface2); position: sticky; top: 0; z-index: 1; }
+#tradelog-table tbody tr:hover { background: rgba(255,255,255,0.03); }
+.time-cell { font-family: monospace; font-size: 0.75rem; color: var(--text-muted); }
+
+/* ── Trade card meta ──────────────────────────────────────────── */
+.trade-tf { background: var(--blue-dim); color: var(--blue); padding: 1px 6px; border-radius: 3px; font-size: 0.75rem; }
+.trade-trigger { color: var(--amber); font-size: 0.75rem; }
