@@ -13,86 +13,144 @@ let currentTimeframe = '4h';
 let onCandleCloseCallback = null;
 let onPriceTickCallback = null;
 let broadcastFn = null;
-let restPollingInterval = null;
 let lastKlineCheckTime = {};
+
+// One-time REST fallback state (replaces the old 1.5s polling loop)
+let hasReceivedPriceUpdate = false;
+let priceSeedFallbackTimer = null;
+
+// REST rate-limit state
+let restBlockedUntil = 0; // timestamp (ms) until which ALL REST ticker calls are disabled
+const REST_418_COOLDOWN_MS = 5 * 60 * 1000; // minimum 5 minutes after an HTTP 418 ban
+const REST_FALLBACK_DELAY_MS = 10000; // how long to wait for WS before seeding via REST
 
 function setBroadcast(fn) {
   broadcastFn = fn;
 }
 
 // ══════════════════════════════════════════
-// PRICE TICKER STREAM + REST FALLBACK POLLING
+// PRICE TICKER STREAM (WebSocket is the sole
+// live source; REST is a one-time seed only)
 // ══════════════════════════════════════════
 
 function startPriceStream(symbols, priceTickCb = null) {
   currentSymbols = symbols;
   if (priceTickCb) onPriceTickCallback = priceTickCb;
 
-  // Start fast REST Polling Engine (every 1.5s) to guarantee 100% live updates on all networks
-  startRestPricePolling(symbols);
+  hasReceivedPriceUpdate = false;
 
-  // Attempt WebSocket stream in parallel
   if (priceWS) {
     priceWS.terminate();
     priceWS = null;
   }
   connectPriceStream(symbols);
+
+  // If the WebSocket hasn't delivered a single price update within
+  // REST_FALLBACK_DELAY_MS, do ONE REST fetch to seed initial prices, then stop.
+  if (priceSeedFallbackTimer) clearTimeout(priceSeedFallbackTimer);
+  priceSeedFallbackTimer = setTimeout(() => {
+    priceSeedFallbackTimer = null;
+    if (!hasReceivedPriceUpdate) {
+      seedInitialPricesOnce(symbols);
+    }
+  }, REST_FALLBACK_DELAY_MS);
 }
 
-function startRestPricePolling(symbols) {
-  if (restPollingInterval) clearInterval(restPollingInterval);
+// Single REST GET with 429/418 handling. Returns the raw ticker array or null.
+async function fetchTickerOnce(url) {
+  try {
+    const response = await axios.get(url, { timeout: 5000 });
+    return Array.isArray(response.data) ? response.data : null;
+  } catch (err) {
+    const status = err.response ? err.response.status : null;
 
-  console.log('[REST TICKER] Starting ultra-fast 1.5s ticker polling engine for', symbols.length, 'symbols');
+    if (status === 429) {
+      const retryAfterHeader = err.response.headers ? err.response.headers['retry-after'] : null;
+      const retryAfterMs = retryAfterHeader ? parseInt(retryAfterHeader, 10) * 1000 : 2000;
+      console.warn(`[REST TICKER] 429 rate-limited on ${url}. Waiting ${retryAfterMs}ms (Retry-After) before retrying once.`);
+      await new Promise(resolve => setTimeout(resolve, retryAfterMs));
 
-  const pollPrices = async () => {
-    try {
-      let rawData = null;
       try {
-        const response = await axios.get('https://fapi.binance.com/fapi/v1/ticker/24hr', { timeout: 5000 });
-        if (Array.isArray(response.data)) rawData = response.data;
-      } catch (e1) {
-        try {
-          const response = await axios.get('https://api.binance.com/api/v3/ticker/24hr', { timeout: 5000 });
-          if (Array.isArray(response.data)) rawData = response.data;
-        } catch (e2) {
-          console.error('[REST TICKER ERROR] Failed to fetch REST prices:', e2.message);
-        }
+        const retryResponse = await axios.get(url, { timeout: 5000 });
+        return Array.isArray(retryResponse.data) ? retryResponse.data : null;
+      } catch (retryErr) {
+        console.error(`[REST TICKER] Retry after 429 failed for ${url}:`, retryErr.message);
+        return null;
       }
-
-      if (!rawData || !Array.isArray(rawData)) return;
-
-      const symbolSet = new Set(symbols);
-      const updates = {};
-
-      rawData.forEach(item => {
-        if (symbolSet.has(item.symbol)) {
-          const price = parseFloat(item.lastPrice);
-          const change = parseFloat(item.priceChangePercent);
-
-          if (!isNaN(price) && price > 0) {
-            priceMap[item.symbol] = price;
-            change24hMap[item.symbol] = change;
-            updates[item.symbol] = { price, change };
-
-            if (onPriceTickCallback) {
-              onPriceTickCallback(item.symbol, price);
-            }
-          }
-        }
-      });
-
-      if (Object.keys(updates).length > 0) {
-        if (broadcastFn) {
-          broadcastFn('PRICE_UPDATE', updates);
-        }
-      }
-    } catch (e) {
-      console.error('[REST TICKER ERROR]', e.message);
     }
-  };
 
-  pollPrices(); // Immediate first fetch
-  restPollingInterval = setInterval(pollPrices, 1500); // 1.5s loop
+    if (status === 418) {
+      restBlockedUntil = Date.now() + REST_418_COOLDOWN_MS;
+      console.warn(
+        `[REST TICKER] ⚠️ HTTP 418 (IP auto-ban) received from ${url}. ` +
+        `Disabling ALL REST ticker calls for at least ${REST_418_COOLDOWN_MS / 60000} minutes.`
+      );
+      return null;
+    }
+
+    console.error(`[REST TICKER] Request failed for ${url}:`, err.message);
+    return null;
+  }
+}
+
+// Tries the futures endpoint, then the spot fallback, respecting any active 418 cooldown.
+async function fetchTickerWithFallback() {
+  if (Date.now() < restBlockedUntil) {
+    const remainingMin = Math.ceil((restBlockedUntil - Date.now()) / 60000);
+    console.warn(`[REST TICKER] Skipping REST call — still in 418 cooldown (~${remainingMin} min remaining).`);
+    return null;
+  }
+
+  let rawData = await fetchTickerOnce('https://fapi.binance.com/fapi/v1/ticker/24hr');
+
+  if (!rawData && Date.now() < restBlockedUntil) {
+    // Just got 418'd on the futures endpoint — don't hit the spot endpoint too.
+    return null;
+  }
+
+  if (!rawData) {
+    rawData = await fetchTickerOnce('https://api.binance.com/api/v3/ticker/24hr');
+  }
+
+  return rawData;
+}
+
+// ONE-TIME REST fallback — only runs if the WebSocket produced nothing within
+// REST_FALLBACK_DELAY_MS of connecting. Does not loop or reschedule itself.
+async function seedInitialPricesOnce(symbols) {
+  console.log('[REST TICKER] No WS price update within 10s — doing a single REST fetch to seed initial prices.');
+
+  const rawData = await fetchTickerWithFallback();
+  if (!rawData) {
+    console.warn('[REST TICKER] One-time REST seed did not return data.');
+    return;
+  }
+
+  const symbolSet = new Set(symbols);
+  const updates = {};
+
+  rawData.forEach(item => {
+    if (symbolSet.has(item.symbol)) {
+      const price = parseFloat(item.lastPrice);
+      const change = parseFloat(item.priceChangePercent);
+
+      if (!isNaN(price) && price > 0) {
+        priceMap[item.symbol] = price;
+        change24hMap[item.symbol] = change;
+        updates[item.symbol] = { price, change };
+
+        if (onPriceTickCallback) {
+          onPriceTickCallback(item.symbol, price);
+        }
+      }
+    }
+  });
+
+  if (Object.keys(updates).length > 0 && broadcastFn) {
+    broadcastFn('PRICE_UPDATE', updates);
+  }
+
+  console.log(`[REST TICKER] One-time REST seed complete — seeded ${Object.keys(updates).length} symbol(s). REST polling stays off; WS is now the sole price source.`);
 }
 
 function connectPriceStream(symbols) {
@@ -128,6 +186,7 @@ function connectPriceStream(symbols) {
 
       priceMap[symbol] = price;
       change24hMap[symbol] = change;
+      hasReceivedPriceUpdate = true;
 
       if (onPriceTickCallback) {
         onPriceTickCallback(symbol, price);
@@ -272,9 +331,10 @@ function isConnected() {
 function stopAllStreams() {
   if (priceWS) priceWS.terminate();
   if (klineWS) klineWS.terminate();
-  if (restPollingInterval) clearInterval(restPollingInterval);
+  if (priceSeedFallbackTimer) clearTimeout(priceSeedFallbackTimer);
   priceWS = null;
   klineWS = null;
+  priceSeedFallbackTimer = null;
 }
 
 function setOnPriceTick(cb) {
