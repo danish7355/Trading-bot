@@ -19,6 +19,8 @@ const tradeLogger      = require('./backend/tradeLogger');
 const analytics        = require('./backend/analytics');
 const db               = require('./backend/db');
 const multiMarket      = require('./backend/multiMarketScanner');
+const tradingGuard     = require('./backend/tradingGuard');
+const exitManager      = require('./backend/exitManager');
 const { formatUTCDateTime, formatUptime } = require('./backend/utils');
 
 const app    = express();
@@ -524,6 +526,69 @@ app.get('/api/delta/positions', async (req, res) => {
   }
 });
 
+// ── Guard & Kill Switch API ───────────────────────────────────────
+
+app.get('/api/guard/status', async (req, res) => {
+  try {
+    const demoBalance  = await storage.getDemoBalance();
+    const dailyPnL     = scanner.getDailyStats().realizedPnL || 0;
+    const active       = tradingGuard.getActiveConditions({ dailyPnL, balance: demoBalance });
+    res.json({
+      killSwitchActive: tradingGuard.isKillSwitchActive(),
+      activeConditions: active,
+      blocked:          active.length > 0,
+      cooldownRemainingMs: tradingGuard.cooldownRemainingMs(),
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/guard/kill-switch/activate', async (req, res) => {
+  try {
+    await tradingGuard.activateKillSwitch();
+    await telegram.sendKillSwitchAlert(true);
+    // Force-exit all open trades
+    await exitManager.killSwitchExitAll(scanner.getOpenTrades(), async (trade, price, outcome) => {
+      const tradesObj = await storage.loadTrades();
+      trade.exitPrice   = price;
+      trade.outcome     = outcome;
+      trade.status      = 'CLOSED';
+      trade.closedAt    = Date.now();
+      trade.closedAtUTC = formatUTCDateTime(Date.now());
+      tradesObj.open    = tradesObj.open.filter(t => t.id !== trade.id);
+      tradesObj.closed.unshift(trade);
+      await storage.saveTrades(tradesObj);
+      broadcast('TRADE_CLOSED', trade);
+    });
+    broadcast('GUARD_STATE_CHANGED', tradingGuard.getActiveConditions());
+    res.json({ success: true, killSwitchActive: true });
+  } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.post('/api/guard/kill-switch/deactivate', async (req, res) => {
+  try {
+    await tradingGuard.deactivateKillSwitch();
+    await telegram.sendKillSwitchAlert(false);
+    broadcast('GUARD_STATE_CHANGED', tradingGuard.getActiveConditions());
+    res.json({ success: true, killSwitchActive: false });
+  } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.get('/api/guard/log', async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 100;
+    const logs  = await tradingGuard.loadGuardLog(limit);
+    res.json({ total: logs.length, logs });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/exit/log', async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 100;
+    const logs  = await exitManager.loadExitLog(limit);
+    res.json({ total: logs.length, logs });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // ── Multi-market API ──────────────────────────────────────────────
 
 app.get('/api/markets/status', (req, res) => {
@@ -615,6 +680,19 @@ async function main() {
   await storage.initialize();
   console.log('[✅] Storage initialized');
 
+  await tradingGuard.initialize();
+  console.log('[✅] Trading guard initialized');
+
+  // Wire WS status changes into the guard
+  websocketManager.setBroadcast((type, data) => {
+    if (type === 'SYSTEM_STATUS') {
+      if (data.binanceConnected !== undefined) {
+        tradingGuard.notifyWebSocketStatus(data.binanceConnected);
+      }
+    }
+    broadcast(type, data);
+  });
+
   tradeLogger.init();
   console.log('[✅] SQLite trade logger initialized');
 
@@ -657,6 +735,16 @@ async function main() {
   // Start multi-market scanners
   multiMarket.startAll();
   console.log('[✅] Multi-market scanners started (NSE / Commodities / NASDAQ)');
+
+  // Broadcast guard status every 30 seconds
+  setInterval(async () => {
+    try {
+      const demoBalance = await storage.getDemoBalance();
+      const dailyPnL    = scanner.getDailyStats().realizedPnL || 0;
+      const conditions  = tradingGuard.getActiveConditions({ dailyPnL, balance: demoBalance });
+      broadcast('GUARD_STATE_CHANGED', conditions);
+    } catch (e) {}
+  }, 30000);
 
   console.log('════════════════════════════════════════');
   console.log('AlgoBot fully operational ✅');

@@ -8,6 +8,8 @@ const indicators     = require('./indicators');
 const websocketManager = require('./websocketManager');
 const { sleep, calculateCandlesOpen, formatUTCDateTime, getSessionBadge } = require('./utils');
 const tradeLogger    = require('./tradeLogger');
+const tradingGuard   = require('./tradingGuard');
+const exitManager    = require('./exitManager');
 
 let coinData        = {};
 let scannerState    = [];
@@ -39,6 +41,8 @@ function getLastAutoScanHeartbeat() { return lastAutoScanHeartbeat; }
 // ── Issue 2: live settings update ─────────────────────────────────
 function updateSettings(newSettings) {
   settingsRef = { ...settingsRef, ...newSettings };
+  tradingGuard.setSettings(settingsRef);
+  exitManager.setSettings(settingsRef);
   console.log(`[SCANNER] Settings updated live — TF: ${settingsRef.timeframe}, AutoTrade: ${settingsRef.autoTradeEnabled}`);
 }
 
@@ -162,6 +166,29 @@ async function onCandleClose(symbol, closeTime) {
       coinData[symbol].candles = newCandles;
     }
 
+    // Section 4: run exit manager for any open trades on this symbol
+    const hasOpenTrades = openTrades.some(t => t.symbol === symbol && t.status === 'OPEN');
+    if (hasOpenTrades) {
+      const candles = coinData[symbol].candles;
+      const highs  = candles.map(c => c.high);
+      const lows   = candles.map(c => c.low);
+      const closes = candles.map(c => c.close);
+      const atr    = indicators.calculateATR(highs, lows, closes, 14);
+      await exitManager.runExitEvaluationsForSymbol(
+        openTrades,
+        symbol,
+        {
+          candles,
+          atr,
+          fundingRate:    0,
+          oiDropPct:      0,
+          killSwitchActive: tradingGuard.isKillSwitchActive(),
+        },
+        finishCloseTrade,
+        storage.saveTrade
+      );
+    }
+
     const result = await strategy.evaluateCoin(
       symbol, coinData[symbol].candles, settingsRef, openTrades, autoTradePaused
     );
@@ -193,6 +220,11 @@ async function handle4GateTrade(symbol, result) {
   await telegram.sendSignalAlert(signal);
 
   if (!settingsRef.autoTradeEnabled || autoTradePaused) return;
+
+  // Section 3: check all 9 guard conditions before entering
+  const demoBalance = await storage.getDemoBalance();
+  const guardResult = await tradingGuard.guardTrade(signal, { dailyPnL: dailyStats.pnl, balance: demoBalance });
+  if (guardResult.blocked) return;
 
   const entryPrice = websocketManager.getCurrentPrice(symbol) || signal.signalCandleClose;
   const trade      = tradeManager.createTrade(signal, entryPrice, result.atr, result.fib, settingsRef);
@@ -228,6 +260,11 @@ async function handleWMTrade(symbol, result) {
   await telegram.sendWMConfirmedAlert(signal, result);
 
   if (!settingsRef.autoTradeEnabled || autoTradePaused) return;
+
+  // Section 3: guard check before WM trade entry
+  const demoBalance = await storage.getDemoBalance();
+  const guardResult = await tradingGuard.guardTrade(signal, { dailyPnL: dailyStats.pnl, balance: demoBalance });
+  if (guardResult.blocked) return;
 
   const countdownSec = settingsRef.wm?.countdownSeconds || 10;
   await sleep(countdownSec * 1000);
@@ -439,6 +476,14 @@ async function finishCloseTrade(trade, exitPrice, outcome) {
       console.error(`[DELTA CLOSE ERROR] ${trade.symbol}:`, e.message);
     }
   }
+
+  // Notify guard of loss trade for cooldown tracking
+  if (trade.realizedPnL < 0) {
+    tradingGuard.recordLossTrade();
+  }
+  // Update guard's weekly baseline
+  const finalBalance = await storage.getDemoBalance();
+  tradingGuard.recordWeeklyBaseline(finalBalance);
 }
 
 async function manualCloseTrade(tradeId) {
@@ -549,6 +594,12 @@ function start(coinList, settings, broadcastCallback) {
   if (coinList && coinList.length > 0) activeCoinList = coinList;
   if (broadcastCallback) broadcastFn = broadcastCallback;
   isScannerRunning = true;
+
+  // Wire guard and exit manager to current settings + broadcast
+  tradingGuard.setSettings(settings);
+  tradingGuard.setBroadcast(broadcastCallback || broadcastFn);
+  exitManager.setSettings(settings);
+  exitManager.setBroadcast(broadcastCallback || broadcastFn);
 
   // 5-second fast periodic UI refresh
   setInterval(async () => {

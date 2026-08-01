@@ -83,6 +83,17 @@ function updateConnectionBadge(status) {
   const s = states[status] || states.disconnected;
   badge.textContent = s.text;
   badge.className   = 'connection-badge ' + s.class;
+  // Section 2: show WS disconnected banner; disable scan button when down
+  if (typeof showWsDisconnectedBanner === 'function') {
+    showWsDisconnectedBanner(status === 'disconnected' || status === 'error');
+  }
+  // Clear WS-disconnected guard badge when reconnected
+  if (status === 'connected' && typeof handleGuardStateChanged === 'function') {
+    if (Array.isArray(activeGuardConditions)) {
+      activeGuardConditions = activeGuardConditions.filter(c => c.id !== 'websocket_disconnected');
+      handleGuardStateChanged(activeGuardConditions);
+    }
+  }
 }
 
 // ── Message routing ───────────────────────────────────────────────
@@ -116,6 +127,9 @@ function handleBackendMessage(msg) {
     case 'MARKET_SCANNER_UPDATE': handleMarketScannerUpdate(msg.data); break;
     case 'MARKET_SCAN_HEARTBEAT': handleMarketHeartbeat(msg.data); break;
     case 'MARKET_TRADE_OPENED':   handleMarketTradeOpened(msg.data); break;
+    // Section 3: guard events
+    case 'GUARD_STATE_CHANGED':  handleGuardStateChanged(msg.data); break;
+    case 'GUARD_BLOCKED':        handleGuardBlocked(msg.data); break;
     default:
       // silently ignore unknown types
   }
@@ -260,16 +274,21 @@ function handlePriceUpdate(priceData) {
     const previousPrice = currentPrices[symbol];
     currentPrices[symbol] = price;
 
-    const priceEl = document.getElementById('price-' + symbol);
-    if (priceEl) {
-      const newText = '$' + formatPrice(price);
-      if (newText !== priceEl.textContent) {
-        priceEl.textContent = newText;
-        priceEl.classList.remove('price-up', 'price-down');
-        void priceEl.offsetWidth;
-        if (previousPrice && price > previousPrice) { priceEl.classList.add('price-up'); priceEl.style.color = '#00ff88'; }
-        else if (previousPrice && price < previousPrice) { priceEl.classList.add('price-down'); priceEl.style.color = '#ff3366'; }
-        setTimeout(() => { priceEl.style.color = ''; }, 600);
+    // Section 2: animated price cell (arrows + flash + stale tracking)
+    if (typeof animatePriceCell === 'function') {
+      animatePriceCell(symbol, price, previousPrice);
+    } else {
+      const priceEl = document.getElementById('price-' + symbol);
+      if (priceEl) {
+        const newText = '$' + formatPrice(price);
+        if (newText !== priceEl.textContent) {
+          priceEl.textContent = newText;
+          priceEl.classList.remove('price-up', 'price-down');
+          void priceEl.offsetWidth;
+          if (previousPrice && price > previousPrice) { priceEl.classList.add('price-up'); priceEl.style.color = '#00ff88'; }
+          else if (previousPrice && price < previousPrice) { priceEl.classList.add('price-down'); priceEl.style.color = '#ff3366'; }
+          setTimeout(() => { priceEl.style.color = ''; }, 600);
+        }
       }
     }
 
@@ -716,6 +735,8 @@ function createSignalRow(sig, rank) {
 
 function handleNewSignal(signal) {
   showToast(`📡 Signal: ${signal.symbol} ${signal.direction} (Score: ${signal.scoreAtSignal})`, 'info');
+  // Section 2: flash the scanner row amber for 2s
+  if (typeof flashSignalRow === 'function') flashSignalRow(signal.symbol);
   loadSignals();
 }
 
@@ -1213,3 +1234,233 @@ window.toggleRanging = function() {
   const w = document.getElementById('ranging-table-wrapper');
   if (w) w.style.display = (w.style.display === 'none' || !w.style.display) ? 'block' : 'none';
 };
+
+// ══════════════════════════════════════════════════════════════
+// SECTION 2 — Price animation improvements
+// ══════════════════════════════════════════════════════════════
+
+// Per-symbol last-tick timestamp for stale detection
+const priceLastTickMs = {};
+const STALE_THRESHOLD_MS = 30000; // 30 seconds
+
+// Check for stale prices every 10s
+setInterval(() => {
+  const now = Date.now();
+  Object.entries(priceLastTickMs).forEach(([symbol, lastMs]) => {
+    const priceEl = document.getElementById('price-' + symbol);
+    if (!priceEl) return;
+    const staleEl = priceEl.parentElement?.querySelector('.stale-badge');
+    const isStale = (now - lastMs) > STALE_THRESHOLD_MS;
+    if (isStale && !staleEl) {
+      const badge = document.createElement('span');
+      badge.className = 'stale-badge';
+      badge.textContent = 'STALE';
+      badge.id = 'stale-' + symbol;
+      priceEl.after(badge);
+    } else if (!isStale && staleEl) {
+      staleEl.remove();
+    }
+  });
+}, 10000);
+
+// Enhanced price cell update with ↑↓ arrows
+function animatePriceCell(symbol, newPrice, oldPrice) {
+  priceLastTickMs[symbol] = Date.now();
+  const priceEl = document.getElementById('price-' + symbol);
+  if (!priceEl) return;
+
+  // Remove existing stale badge
+  document.getElementById('stale-' + symbol)?.remove();
+
+  const formatted = '$' + formatPrice(newPrice);
+  if (priceEl.textContent === formatted) return;
+  priceEl.textContent = formatted;
+
+  if (oldPrice && newPrice !== oldPrice) {
+    const isUp = newPrice > oldPrice;
+    priceEl.classList.remove('price-flash-up', 'price-flash-down');
+    void priceEl.offsetWidth; // reflow
+    priceEl.classList.add(isUp ? 'price-flash-up' : 'price-flash-down');
+
+    // Arrow indicator
+    const existingArrow = priceEl.parentElement?.querySelector('.price-arrow');
+    if (existingArrow) existingArrow.remove();
+    const arrow = document.createElement('span');
+    arrow.className = 'price-arrow';
+    arrow.textContent = isUp ? ' ↑' : ' ↓';
+    arrow.style.color = isUp ? '#00ff88' : '#ff3366';
+    priceEl.after(arrow);
+    setTimeout(() => arrow.remove(), 1200);
+
+    // Remove flash class after animation
+    setTimeout(() => priceEl.classList.remove('price-flash-up', 'price-flash-down'), 600);
+  }
+}
+
+// Override handlePriceUpdate to use new animation
+const _origHandlePriceUpdate = handlePriceUpdate;
+// Patch price update to call animatePriceCell
+const _origSchedulePriceBroadcast = null; // WS already batches via backend
+
+// ══════════════════════════════════════════════════════════════
+// SECTION 3 — Trading Guard / Kill Switch
+// ══════════════════════════════════════════════════════════════
+
+let killSwitchActive = false;
+let activeGuardConditions = [];
+
+function handleGuardStateChanged(conditions) {
+  activeGuardConditions = Array.isArray(conditions) ? conditions : [];
+  killSwitchActive = activeGuardConditions.some(c => c.id === 'kill_switch_active');
+
+  // Update kill switch button appearance
+  const btn = document.getElementById('kill-switch-btn');
+  if (btn) {
+    if (killSwitchActive) {
+      btn.textContent = '✅ KILL SWITCH ON — CLICK TO DEACTIVATE';
+      btn.classList.add('kill-switch-on');
+    } else {
+      btn.textContent = '⛔ KILL SWITCH';
+      btn.classList.remove('kill-switch-on');
+    }
+  }
+
+  // Guard badge bar
+  const bar    = document.getElementById('guard-badge-bar');
+  const inner  = document.getElementById('guard-badges-inner');
+  const deactBtn = document.getElementById('kill-switch-deactivate-btn');
+
+  if (!bar || !inner) return;
+
+  if (activeGuardConditions.length === 0) {
+    bar.classList.remove('active');
+    return;
+  }
+
+  bar.classList.add('active');
+  if (deactBtn) deactBtn.style.display = killSwitchActive ? 'inline-block' : 'none';
+
+  inner.innerHTML = activeGuardConditions.map(c => {
+    const cls = c.id === 'kill_switch_active' ? 'guard-badge-kill'
+              : c.id.includes('loss') || c.id.includes('cooldown') ? 'guard-badge-warn'
+              : 'guard-badge-info';
+    const icon = c.id === 'kill_switch_active'    ? '🔴'
+               : c.id === 'cooldown_active'        ? `🟡 COOLDOWN: ${c.cooldownRemaining||0}m`
+               : c.id === 'daily_loss_cap_hit'     ? '🟠'
+               : c.id === 'websocket_disconnected' ? '📡'
+               : c.id === 'stale_data_active'      ? '⏱'
+               : '⚠️';
+    return `<span class="guard-badge ${cls}" title="${c.reason || c.label}">${icon} ${c.label}</span>`;
+  }).join('');
+}
+
+function handleGuardBlocked(data) {
+  showToast(`⛔ Trade blocked: ${data.reason || data.condition}${data.symbol ? ' ('+data.symbol+')' : ''}`, 'error', 7000);
+}
+
+async function toggleKillSwitch() {
+  if (killSwitchActive) {
+    await deactivateKillSwitch();
+  } else {
+    if (!confirm('⛔ ACTIVATE KILL SWITCH?\n\nThis will immediately:\n• Block ALL new trades\n• Close ALL open positions\n• Halt all trade monitoring\n\nAre you sure?')) return;
+    await activateKillSwitch();
+  }
+}
+
+async function activateKillSwitch() {
+  try {
+    const res  = await fetch('/api/guard/kill-switch/activate', { method: 'POST' });
+    const data = await res.json();
+    if (data.success) {
+      showToast('⛔ Kill switch ACTIVATED — all positions closing', 'error', 8000);
+      handleGuardStateChanged([{ id: 'kill_switch_active', label: 'Kill Switch Active', reason: 'Kill switch is ON' }]);
+    } else {
+      showToast('Kill switch error: ' + data.error, 'error');
+    }
+  } catch (e) {
+    showToast('Failed: ' + e.message, 'error');
+  }
+}
+
+async function deactivateKillSwitch() {
+  try {
+    const res  = await fetch('/api/guard/kill-switch/deactivate', { method: 'POST' });
+    const data = await res.json();
+    if (data.success) {
+      showToast('✅ Kill switch deactivated — trading resumed', 'success', 5000);
+      handleGuardStateChanged([]);
+    } else {
+      showToast('Error: ' + data.error, 'error');
+    }
+  } catch (e) {
+    showToast('Failed: ' + e.message, 'error');
+  }
+}
+
+// Wire into message router (already handled by handleBackendMessage switch above,
+// but we add these as a post-load patch since the original switch doesn't have them)
+const _origHandleBackendMessage = handleBackendMessage;
+window._guardPatched = true;
+
+// ══════════════════════════════════════════════════════════════
+// SECTION 2 — WS disconnect banner + scan button disable
+// ══════════════════════════════════════════════════════════════
+
+function showWsDisconnectedBanner(show) {
+  const banner = document.getElementById('ws-stale-banner');
+  if (!banner) return;
+  banner.style.display = show ? 'block' : 'none';
+  // Disable/enable scan button
+  const scanBtn = document.querySelector('button[onclick="triggerScanNow()"]');
+  if (scanBtn) {
+    scanBtn.disabled = show;
+    scanBtn.style.opacity = show ? '0.4' : '1';
+    scanBtn.title = show ? 'Live feed disconnected' : '';
+  }
+}
+
+// Section 2: flash signal row amber for 2s when a new signal fires
+function flashSignalRow(symbol) {
+  // Flash scanner row
+  const row = document.getElementById('row-' + symbol);
+  if (row) {
+    row.classList.remove('signal-row-flash');
+    void row.offsetWidth;
+    row.classList.add('signal-row-flash');
+    setTimeout(() => row.classList.remove('signal-row-flash'), 2000);
+  }
+}
+
+// Signal row flash is called from handleNewSignal (patched below)
+// WS banner and guard updates are called from updateConnectionBadge (patched below)
+// Price animation is called from handlePriceUpdate (patched below)
+
+// ══════════════════════════════════════════════════════════════
+// Route new WS events from handleBackendMessage
+// ══════════════════════════════════════════════════════════════
+// These are injected after the original switch-case handler.
+// The original handleBackendMessage has a default case that silently ignores
+// unknown types, so we patch it here.
+(function patchMessageRouter() {
+  const originalHandler = window.handleBackendMessage || handleBackendMessage;
+  // Re-assign globally by overriding in this scope's closure.
+  // Since app.js runs in a single global script scope, we attach to the module.
+  // The actual override happens because all functions here share the same scope.
+})();
+
+// Called when WS delivers GUARD_STATE_CHANGED (wired via handleBackendMessage case)
+// GUARD_BLOCKED is wired via handleGuardBlocked
+
+// ══════════════════════════════════════════════════════════════
+// Load guard status on page load
+// ══════════════════════════════════════════════════════════════
+setTimeout(async () => {
+  try {
+    const res  = await fetch('/api/guard/status');
+    const data = await res.json();
+    handleGuardStateChanged(data.activeConditions || []);
+    if (data.killSwitchActive) {
+      showToast('⛔ Kill switch is currently ACTIVE', 'error', 8000);
+    }
+  } catch (e) { /* ignore on load */ }
+}, 2000);

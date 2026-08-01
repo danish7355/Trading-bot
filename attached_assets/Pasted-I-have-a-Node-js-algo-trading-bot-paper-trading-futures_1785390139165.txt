@@ -1,0 +1,256 @@
+I have a Node.js algo trading bot (paper trading, futures perpetuals) with 
+a working frontend + backend. I need you to do a full automated audit, fix 
+live data issues, add two major safety/exit systems, then push to GitHub 
+ONLY after everything is confirmed working. Work on a feature branch, not 
+main, until I say push.
+
+Read the entire codebase first before touching anything. Build a mental map 
+of every module, service, route, scheduler, and data flow. Then execute 
+the sections below in order.
+
+=== SECTION 1: FULL PROJECT AUDIT ===
+
+Scan every file and flag:
+- Silent error swallowing (empty catch blocks, missing .catch() on promises)
+- Un-awaited async calls that can cause race conditions
+- Any hardcoded config values that should come from settings/env
+- Stale in-memory state that doesn't re-read from DB after a settings change
+- Missing input validation on API routes
+- Any place where a Binance or Render-specific assumption is baked in that 
+  would break if either service goes down or rate-limits (e.g. hardcoded 
+  Binance base URLs, no timeout on fetch calls, no retry logic, reliance on 
+  Render's ephemeral filesystem for anything that must persist)
+- Scheduler issues: overlapping scan runs, missing run guards, scan errors 
+  that kill the scheduler loop silently
+- DB write failures that go unlogged and allow the bot to keep trading on 
+  bad state
+- Any security issues: exposed secrets, missing env vars, no rate limiting 
+  on inbound API routes
+
+Fix everything you find. List each issue and its fix in a summary at the 
+end of this section.
+
+=== SECTION 2: LIVE PRICE FEED — FIX DELAYED DATA + ANIMATIONS ===
+
+Problem: Prices in the scanner tab appear to be delayed/static, not 
+updating live.
+
+Diagnosis first:
+- Trace where the frontend gets price data. Is it polling a REST endpoint 
+  on an interval? Is it using a WebSocket? How often is the backend actually 
+  fetching from the exchange?
+- Find the bottleneck: is it the frontend not refreshing, the backend 
+  caching stale prices, or the upstream API being slow?
+
+Fix with a proper WebSocket-first approach:
+- Open a single WebSocket connection per market to the exchange (Binance 
+  WS stream for futures, or the alternate source configured in the project) 
+  — one connection total per market, not one per client, not one per scan.
+- Push live price ticks from the WS stream into an in-memory price cache 
+  on the backend.
+- Expose a Socket.io (or native WS) channel to the frontend so prices 
+  update in real-time without polling.
+- The scan engine reads from the same in-memory cache — it should never 
+  fire a fresh REST call just to get the current price.
+- For REST fallback (if WS disconnects): retry with exponential backoff, 
+  cap at 1 REST call per 10 seconds per market maximum, and surface a 
+  "DATA STALE" warning in the UI when falling back.
+- Do NOT fire a new HTTP request on every price display refresh — that is 
+  the definition of API spam.
+
+Frontend animations for price changes in the scanner tab:
+- When a price ticks UP: flash the price cell green for 600ms, show a 
+  small upward arrow (↑) that fades out.
+- When a price ticks DOWN: flash red for 600ms, show a downward arrow (↓).
+- If no tick received for >30 seconds: show a yellow pulsing "STALE" badge 
+  next to that market's price.
+- If WebSocket is disconnected: show a persistent red banner at the top of 
+  the scanner tab ("⚠️ Live feed disconnected — reconnecting...") and 
+  disable the scan trigger button until reconnected.
+- Add a small green pulsing dot (like a live indicator) next to each market 
+  name when its WS stream is healthy.
+- All animations must use CSS transitions only — no heavy JS animation 
+  libraries.
+
+For signal/trade alerts:
+- When a signal fires, briefly highlight the entire row in the scanner tab 
+  (gold/amber border flash for 2 seconds) so it's impossible to miss even 
+  if I'm not looking at notifications.
+
+=== SECTION 3: IMPLEMENT BLOCK CONDITIONS (TRADE GUARD SYSTEM) ===
+
+Add a TradingGuard module (new file, e.g. services/tradingGuard.js) with 
+these nine block conditions. The bot must check ALL of them before entering 
+ANY new position. If any is active, block the trade, log the reason, and 
+surface it clearly in the UI.
+
+BLOCK_CONDITIONS = [
+  "stale_data_active",         // WS disconnected or last price >60s old
+  "websocket_disconnected",    // WS stream not connected/confirmed dead
+  "reconciliation_required",   // Open positions in DB don't match exchange state
+  "kill_switch_active",        // Manual emergency stop is on
+  "daily_loss_cap_hit",        // Total realized PnL today < -X% (configurable)
+  "weekly_loss_cap_hit",       // Total realized PnL this week < -Y% (configurable)
+  "cooldown_active",           // A loss trade fired within last N minutes (configurable)
+  "database_write_failed",     // Last attempted DB write failed — don't trade on bad state
+  "exchange_unreachable",      // Last health check to exchange API failed
+]
+
+Implementation:
+- TradingGuard checks all 9 conditions synchronously before every trade 
+  entry attempt. If any returns true, it returns { blocked: true, reason: 
+  string } and the position is NOT opened.
+- daily_loss_cap, weekly_loss_cap, cooldown_period should be configurable 
+  from the existing settings UI — add fields if they don't exist.
+- kill_switch_active: add a hard kill-switch toggle button to the UI (big, 
+  red, unmissable) that sets a flag in the DB so it persists across restarts. 
+  Activating it also immediately halts all open-position monitoring (no new 
+  exits trigger, no new entries, bot goes fully passive until switched off).
+- All block events must be logged to a guard_log table (or existing events 
+  table): timestamp, condition, attempted trade details.
+- Show active block conditions as badges in the dashboard header — e.g. 
+  "🔴 KILL SWITCH ACTIVE", "🟡 COOLDOWN: 4m remaining".
+
+=== SECTION 4: IMPLEMENT EXIT MANAGER ===
+
+NOTE: The design spec below uses Python syntax — translate ALL of it into 
+Node.js exactly preserving the logic. Use camelCase naming conventions. 
+Map Python type hints to JSDoc or TypeScript interfaces if the project 
+uses TS, otherwise use JSDoc.
+
+Create a new file: services/exitManager.js
+
+It must monitor all open positions on every candle close and evaluate these 
+10 exit triggers:
+
+EXIT_TRIGGERS = [
+  "hard_stop_hit",           // Price crossed stop level
+  "regime_deterioration",    // Regime score dropped below 40
+  "momentum_exhaustion",     // RSI divergence on 3+ consecutive candles
+  "trend_structure_break",   // Price closed below EMA_M after being above it
+  "volume_dry_up",           // 3 consecutive candles below 0.5× volume SMA
+  "max_hold_time_exceeded",  // Position held beyond timeframe profile limit
+  "funding_rate_extreme",    // Funding rate flipped extreme against position direction
+  "oi_dropping",             // OI dropped >10% while price moved in direction (exhaustion)
+  "manual_exit",             // User clicked exit in UI or sent Telegram command
+  "kill_switch",             // Emergency exit all — triggered by kill switch above
+]
+
+Exit decision logic (translate to Node.js exactly):
+
+async function evaluateExit(position, marketState) {
+  const triggersFired = []
+
+  // Hard stop — always checked first, exits immediately, never batched
+  if (position.side === 'LONG' && marketState.price <= position.stopPrice) {
+    return { exit: true, reason: 'HARD_STOP', pctToExit: 100 }
+  }
+  if (position.side === 'SHORT' && marketState.price >= position.stopPrice) {
+    return { exit: true, reason: 'HARD_STOP', pctToExit: 100 }
+  }
+
+  // Regime deterioration
+  if (marketState.regime.score < 40) triggersFired.push('REGIME_DETERIORATION')
+
+  // Trend structure break
+  if (position.side === 'LONG' && marketState.close < marketState.emaM) {
+    triggersFired.push('TREND_STRUCTURE_BREAK')
+  }
+  if (position.side === 'SHORT' && marketState.close > marketState.emaM) {
+    triggersFired.push('TREND_STRUCTURE_BREAK')
+  }
+
+  // RSI divergence — price making higher high but RSI making lower high
+  if (detectRsiDivergence(position, marketState.df)) {
+    triggersFired.push('MOMENTUM_EXHAUSTION')
+  }
+
+  // Volume dry-up — 3 consecutive candles below 0.5× volume SMA
+  if (marketState.volRatio3Period < 0.5) triggersFired.push('VOLUME_DRY_UP')
+
+  // Max hold time
+  if (new Date() > position.maxHoldUntil) triggersFired.push('MAX_HOLD_TIME')
+
+  // Funding rate extreme
+  if (Math.abs(marketState.fundingRate) > FUNDING_EXTREME_THRESHOLD &&
+      isFundingAgainstPosition(position.side, marketState.fundingRate)) {
+    triggersFired.push('FUNDING_RATE_EXTREME')
+  }
+
+  // OI dropping while price moves in direction (exhaustion signal)
+  if (marketState.oiDropPct > 0.10) triggersFired.push('OI_DROPPING')
+
+  // Exit decision matrix — DO NOT change this logic:
+  // 3+ soft triggers  → exit 100%
+  // 2 soft triggers   → exit 50%
+  // 1 soft trigger    → tighten stop to 0.8× ATR distance, don't exit
+  // 0 triggers        → hold
+
+  if (triggersFired.length >= 3) {
+    return { exit: true, reason: triggersFired.join('|'), pctToExit: 100 }
+  } else if (triggersFired.length === 2) {
+    return { exit: true, reason: triggersFired.join('|'), pctToExit: 50 }
+  } else if (triggersFired.length === 1) {
+    return { exit: false, action: 'TIGHTEN_STOP', reason: triggersFired[0] }
+  } else {
+    return { exit: false, action: 'HOLD' }
+  }
+}
+
+Additional Exit Manager requirements:
+- Partial exit (pctToExit: 50): close half the position, update the DB 
+  record with the partial close, recalculate and update stop/TP on the 
+  remaining half. Don't create a duplicate position row — update the 
+  existing one with quantity reduced and a partial_exit_log JSON field.
+- TIGHTEN_STOP action: recalculate stop as current_price - (0.8 × ATR) 
+  for LONG, current_price + (0.8 × ATR) for SHORT. Update position record. 
+  Log the stop adjustment.
+- Funding rate threshold (FUNDING_EXTREME_THRESHOLD) and max hold time 
+  limits per timeframe should be configurable in settings.
+- Every exit decision — even HOLD — should be logged to an 
+  exit_evaluations table (position_id, timestamp, triggers_fired, decision, 
+  action). This is the audit trail for strategy performance.
+- manual_exit: wire the "Exit" button in the UI and a Telegram command 
+  (/exit SYMBOL) to set a manual_exit_requested flag on the position. 
+  The evaluateExit loop picks it up on the next cycle.
+- kill_switch exit: when the kill switch is activated, call evaluateExit 
+  with a synthetic marketState that forces immediate 100% exit on every 
+  open position.
+
+Telegram messages on exit:
+- Send a Telegram alert for every exit with: symbol, side, exit trigger(s), 
+  entry price, exit price, P&L in dollar and %, hold duration.
+- For partial exits: clearly mark as "PARTIAL EXIT (50%)" with remaining 
+  position details.
+- For TIGHTEN_STOP: send "⚠️ Stop tightened on [SYMBOL] — now at [PRICE]".
+
+=== SECTION 5: FINAL CHECKS BEFORE GITHUB PUSH ===
+
+After implementing everything above:
+
+1. Run through this checklist manually and confirm each passes:
+   □ Scanner tab shows live prices updating in real-time with animations
+   □ Stale data warning appears if WS disconnects
+   □ Signal row flashes amber when a signal fires
+   □ Kill switch button works — blocks all new trades, shown in dashboard
+   □ Daily/weekly loss cap correctly blocks trades after threshold
+   □ Cooldown correctly blocks for configured period after a loss
+   □ Exit manager evaluates on every candle close for all open positions
+   □ Partial exit correctly updates position (not duplicate row)
+   □ Telegram alerts fire on entry, TP exit, SL exit, partial exit, 
+     stop tighten, kill switch activation
+   □ Settings changes (timeframe, loss caps, cooldown) take effect on 
+     next scan cycle without restart
+   □ No console errors, no unhandled promise rejections on startup
+   □ DB writes are confirmed before trade execution proceeds
+
+2. Run the project audit from Section 1 one more time after all changes 
+   to make sure nothing regressed.
+
+3. Only after all boxes above are checked: 
+   git add .
+   git commit -m "feat: live price feed, trading guard, exit manager, 
+   audit fixes, scanner animations"
+   git push origin <feature-branch-name>
+   
+   Then tell me the branch name and what to review before merging to main.

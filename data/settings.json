@@ -2,7 +2,7 @@
   "exchange": "binance",
   "deltaMode": "live",
   "timeframe": "1h",
-  "scanCoins": 120,
+  "scanCoins": 79,
   "scanInterval": 30,
   "autoTradeEnabled": true,
   "autoTradePaused": false,
@@ -42,7 +42,18 @@
   "trade": {
     "positionSizePct": 0.5,
     "leverage": 10,
-    "maxConcurrentTrades": 5
+    "maxConcurrentTrades": 5,
+    "maxRiskPerTradePct": 2,
+    "dailyLossLimitPct": 5,
+    "tp1AtrMultiple": 2,
+    "tp1ClosePct": 40,
+    "tp2AtrMultiple": 3.5,
+    "tp2ClosePct": 40,
+    "tp3ClosePct": 20,
+    "trailingStopAtr": 1,
+    "trailingActivatesAt": "tp1",
+    "timeExitCandles": 3,
+    "timeExitScoreThreshold": 40
   },
   "wm": {
     "enabled": true,
@@ -55,7 +66,26 @@
   },
   "demoBalance": 10000,
   "telegram": {
-    "botToken": "",
-    "chatId": ""
+    "botToken": "8902953511:AAFfh-01kdbXYOIparEALlrxDUFPShUgaMM",
+    "chatId": "5029073195",
+    "alerts": {
+      "signalDetected": true,
+      "wmReady": true,
+      "wmConfirmed": true,
+      "tradeOpened": true,
+      "tp1Hit": true,
+      "tp2Hit": true,
+      "tp3Hit": true,
+      "slHit": true,
+      "trailingMoved": true,
+      "trailingHit": true,
+      "manualClose": true,
+      "timeExit": true,
+      "dailyLimit": true,
+      "ranging": true,
+      "scoreDegrading": true,
+      "volatilitySpike": true,
+      "wmForming": false
+    }
   }
 }

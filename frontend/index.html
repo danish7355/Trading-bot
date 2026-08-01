@@ -14,6 +14,18 @@
     🔴 LIVE TRADING ACTIVE — Real orders being placed on Delta Exchange
   </div>
 
+  <!-- WS DISCONNECTED BANNER (Section 2) -->
+  <div id="ws-stale-banner" style="display:none;position:fixed;top:0;left:0;right:0;z-index:10000;background:#cc2200;color:#fff;font-weight:bold;text-align:center;padding:8px 16px;">
+    ⚠️ Live feed disconnected — reconnecting... Scan trigger disabled.
+  </div>
+
+  <!-- GUARD BADGE BAR (Section 3) -->
+  <div id="guard-badge-bar" style="display:none;padding:4px 12px;background:#1a0a00;border-bottom:2px solid #ff3500;font-size:0.8rem;gap:10px;flex-wrap:wrap;align-items:center;">
+    <span style="color:#ff5500;font-weight:bold;">⛔ TRADE GUARDS ACTIVE:</span>
+    <span id="guard-badges-inner"></span>
+    <button id="kill-switch-deactivate-btn" style="display:none;background:#00cc44;color:#000;border:none;border-radius:4px;padding:2px 10px;cursor:pointer;font-weight:bold;" onclick="deactivateKillSwitch()">✅ DEACTIVATE KILL SWITCH</button>
+  </div>
+
   <!-- TOP BAR -->
   <div id="top-bar">
     <div class="logo">🤖 AlgoBot</div>
@@ -48,6 +60,8 @@
       <span id="scan-heartbeat-badge" class="badge badge-hb-pending" title="Auto-scan heartbeat">⏳</span>
     </div>
     <div id="connection-status" class="connection-badge status-connecting">⏳ Connecting...</div>
+    <!-- Kill switch button - always visible in top bar -->
+    <button id="kill-switch-btn" onclick="toggleKillSwitch()" style="background:var(--red);color:#fff;border:none;border-radius:6px;padding:5px 14px;font-weight:bold;font-size:0.85rem;cursor:pointer;margin-left:8px;">⛔ KILL SWITCH</button>
   </div>
 
   <!-- MAIN NAVIGATION TABS -->

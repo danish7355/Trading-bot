@@ -183,8 +183,58 @@ Time: ${formatUTCDateTime(Date.now())}`;
   return await sendMessage(text, customToken, customChatId);
 }
 
+async function sendStopTightenedAlert(trade, newStop) {
+  const settings = await storage.loadSettings();
+  if (!settings.telegram?.alerts?.trailingMoved) return;
+  const text = `⚠️ <b>STOP TIGHTENED — ${trade.symbol} ${trade.direction}</b>
+━━━━━━━━━━━━━━━━━━━━━
+Time: ${formatUTCDateTime(Date.now())}
+New Stop Level: $${typeof newStop === 'number' ? newStop.toFixed(4) : newStop}
+Reason: Exit Manager — soft trigger detected
+Entry: $${trade.entryPrice?.toFixed(2)} | Remaining: ${Math.round((trade.remainingPct||1)*100)}%`;
+  await sendMessage(text);
+}
+
+async function sendPartialExitAlert(trade, exitPrice, pnl, triggers, holdDuration) {
+  const settings = await storage.loadSettings();
+  if (!settings.telegram?.alerts?.tp2Hit) return; // reuse tp2 gate as proxy for partial exits
+  const sign   = pnl >= 0 ? '+' : '-';
+  const pnlPct = ((Math.abs(pnl) / trade.positionValue) * 100).toFixed(2);
+  const text = `🔀 <b>PARTIAL EXIT (50%) — ${trade.symbol} ${trade.direction}</b>
+━━━━━━━━━━━━━━━━━━━━━
+Time: ${formatUTCDateTime(Date.now())}
+Exit Price: $${typeof exitPrice === 'number' ? exitPrice.toFixed(4) : exitPrice}
+Realized (50%): ${sign}$${Math.abs(pnl).toFixed(2)} (${sign}${pnlPct}%)
+Triggers: ${triggers}
+Hold: ${holdDuration}
+Remaining: ${Math.round((trade.remainingPct||0.5)*100)}% still open`;
+  await sendMessage(text);
+}
+
+async function sendExitManagerAlert(trade, exitPrice, pnl, pnlStr, triggers, holdDuration, isFull) {
+  const settings = await storage.loadSettings();
+  if (!settings.telegram?.alerts?.slHit) return; // reuse slHit gate
+  const exitType = isFull ? 'FULL EXIT' : 'PARTIAL EXIT';
+  const text = `🚨 <b>EXIT MGR — ${exitType} — ${trade.symbol} ${trade.direction}</b>
+━━━━━━━━━━━━━━━━━━━━━
+Time: ${formatUTCDateTime(Date.now())}
+Entry: $${trade.entryPrice?.toFixed(2)} → Exit: $${typeof exitPrice === 'number' ? exitPrice.toFixed(4) : exitPrice}
+Realized P&L: ${pnlStr}
+Hold Duration: ${holdDuration}
+Exit Triggers: ${triggers}`;
+  await sendMessage(text);
+}
+
+async function sendKillSwitchAlert(activated) {
+  const text = activated
+    ? `⛔ <b>KILL SWITCH ACTIVATED</b>\n━━━━━━━━━━━━━━━━━━━━━\nAll trading halted immediately.\nAll open positions being closed.\nTime: ${formatUTCDateTime(Date.now())}`
+    : `✅ <b>KILL SWITCH DEACTIVATED</b>\n━━━━━━━━━━━━━━━━━━━━━\nTrading resumed.\nTime: ${formatUTCDateTime(Date.now())}`;
+  await sendMessage(text);
+}
+
 module.exports = {
   sendMessage, sendSignalAlert, sendWMConfirmedAlert, sendTradeOpenedAlert,
   sendTPAlert, sendSLAlert, sendTrailingHitAlert, sendManualCloseAlert,
-  sendTrailingMovedAlert, sendDailyLimitAlert, sendRangingAlert, sendTestAlert
+  sendTrailingMovedAlert, sendDailyLimitAlert, sendRangingAlert, sendTestAlert,
+  sendStopTightenedAlert, sendPartialExitAlert, sendExitManagerAlert, sendKillSwitchAlert,
 };

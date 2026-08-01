@@ -1,0 +1,18 @@
+[
+  {
+    "timestamp": "2026-07-30T08:09:23.457Z",
+    "condition": "stale_data_active",
+    "reason": "Last price update was 617s ago (>60s threshold)",
+    "attemptedSymbol": "KAITOUSDT",
+    "attemptedDir": "SHORT",
+    "score": 42
+  },
+  {
+    "timestamp": "2026-07-30T08:04:23.514Z",
+    "condition": "stale_data_active",
+    "reason": "Last price update was 317s ago (>60s threshold)",
+    "attemptedSymbol": "KAITOUSDT",
+    "attemptedDir": "SHORT",
+    "score": 42
+  }
+]

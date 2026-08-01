@@ -193,7 +193,9 @@ function connectPriceStream(symbols) {
       }
 
       schedulePriceBroadcast(symbol, price, change);
-    } catch (e) {}
+    } catch (e) {
+      console.error('[PRICE WS] Message parse error:', e.message);
+    }
   });
 
   priceWS.on('close', (code) => {
@@ -286,7 +288,9 @@ function connectKlineStream(symbols, timeframe) {
           });
         }
       }
-    } catch (e) {}
+    } catch (e) {
+      console.error('[KLINE WS] Message parse error:', e.message);
+    }
   });
 
   klineWS.on('close', () => {
