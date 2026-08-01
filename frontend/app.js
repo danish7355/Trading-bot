@@ -1306,6 +1306,8 @@ function animatePriceCell(symbol, newPrice, oldPrice) {
     priceEl.classList.remove('price-flash-up', 'price-flash-down');
     void priceEl.offsetWidth; // reflow
     priceEl.classList.add(isUp ? 'price-flash-up' : 'price-flash-down');
+    priceEl.style.color = isUp ? '#00ff88' : '#ff3366';
+    setTimeout(() => { priceEl.style.color = ''; }, 600);
 
     // Arrow indicator
     const existingArrow = priceEl.parentElement?.querySelector('.price-arrow');

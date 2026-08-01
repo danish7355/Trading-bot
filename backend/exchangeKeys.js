@@ -119,38 +119,44 @@ async function testCoinbaseConnection(apiKey, apiSecret) {
   }
 }
 
-async function testDeltaConnection(apiKey, apiSecret) {
+async function testDeltaConnection(apiKey, apiSecret, mode = 'demo') {
   try {
-    // Delta Exchange uses HMAC-SHA256 signed requests
-    const crypto    = require('crypto');
-    const method    = 'GET';
-    const path_str  = '/v2/profile';
-    const ts        = Math.floor(Date.now() / 1000).toString();
-    const sig_data  = method + ts + path_str;
-    const sig       = crypto.createHmac('sha256', apiSecret).update(sig_data).digest('hex');
-    const res = await axios.get('https://api.delta.exchange' + path_str, {
+    const crypto   = require('crypto');
+    // Demo → India testnet; Live → production
+    const baseUrl  = mode === 'live'
+      ? 'https://api.india.delta.exchange'
+      : 'https://testnet-api.india.delta.exchange';
+    const method   = 'GET';
+    const path_str = '/v2/profile';
+    const ts       = Math.floor(Date.now() / 1000).toString();
+    const sig      = crypto.createHmac('sha256', apiSecret).update(method + ts + path_str).digest('hex');
+    const res = await axios.get(baseUrl + path_str, {
       headers: {
-        'api-key':       apiKey,
-        'signature':     sig,
-        'timestamp':     ts,
-        'User-Agent':    'AlgoBot/1.0',
-        'Content-Type':  'application/json',
+        'api-key':      apiKey,
+        'signature':    sig,
+        'timestamp':    ts,
+        'Content-Type': 'application/json',
       },
       timeout: 8000,
     });
-    return { success: true, message: `Delta OK — user: ${res.data?.result?.email || 'authenticated'}` };
+    const label = mode === 'demo' ? 'Testnet' : 'Live';
+    return { success: true, message: `Delta ${label} OK — ${res.data?.result?.email || 'authenticated'}` };
   } catch (err) {
     const status = err.response?.status;
-    if (status === 401 || status === 403) return { success: false, message: 'Invalid Delta key or insufficient permissions' };
+    const body   = err.response?.data;
+    if (status === 401 || status === 403)
+      return { success: false, message: 'Invalid Delta key or missing permissions' };
+    if (status === 404)
+      return { success: false, message: 'Delta API endpoint not found — check key type (India vs Global)' };
     return { success: false, message: err.message };
   }
 }
 
-async function testConnection(exchange, apiKey, apiSecret) {
+async function testConnection(exchange, apiKey, apiSecret, mode = 'demo') {
   switch (exchange) {
     case 'binance':  return testBinanceConnection(apiKey, apiSecret);
     case 'coinbase': return testCoinbaseConnection(apiKey, apiSecret);
-    case 'delta':    return testDeltaConnection(apiKey, apiSecret);
+    case 'delta':    return testDeltaConnection(apiKey, apiSecret, mode);
     default: return { success: false, message: `Unknown exchange: ${exchange}` };
   }
 }

@@ -606,9 +606,9 @@ app.post('/api/exchange/keys', async (req, res) => {
 
 app.post('/api/exchange/test', async (req, res) => {
   try {
-    const { exchange, apiKey, apiSecret } = req.body;
+    const { exchange, apiKey, apiSecret, mode = 'demo' } = req.body;
     if (!exchange || !apiKey || !apiSecret) return res.status(400).json({ error: 'exchange, apiKey and apiSecret required' });
-    const result = await exchangeKeys.testConnection(exchange, apiKey, apiSecret);
+    const result = await exchangeKeys.testConnection(exchange, apiKey, apiSecret, mode);
     res.json(result);
   } catch (err) { res.status(500).json({ success: false, error: err.message }); }
 });
