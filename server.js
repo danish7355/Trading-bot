@@ -21,6 +21,8 @@ const db               = require('./backend/db');
 const multiMarket      = require('./backend/multiMarketScanner');
 const tradingGuard     = require('./backend/tradingGuard');
 const exitManager      = require('./backend/exitManager');
+const strategyPresets  = require('./backend/strategyPresets');
+const exchangeKeys     = require('./backend/exchangeKeys');
 const { formatUTCDateTime, formatUptime } = require('./backend/utils');
 
 const app    = express();
@@ -524,6 +526,98 @@ app.get('/api/delta/positions', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// ── Section 1: WS tick-age diagnostic ────────────────────────────
+app.get('/api/ws/status', (req, res) => {
+  const ageMs = websocketManager.getLastTickAge();
+  res.json({
+    connected:    websocketManager.isConnected(),
+    lastTickAgeMs: ageMs,
+    lastTickAgeSec: ageMs !== null ? Math.round(ageMs / 1000) : null,
+    stale:        ageMs !== null && ageMs > 15000,
+  });
+});
+
+// ── Section 3: Strategy presets ───────────────────────────────────
+app.get('/api/strategy/presets', (req, res) => {
+  res.json({ presets: strategyPresets.listPresets() });
+});
+
+app.post('/api/strategy/preset/apply', async (req, res) => {
+  try {
+    const { presetId } = req.body;
+    if (!presetId) return res.status(400).json({ error: 'presetId required' });
+    const patch = strategyPresets.getPresetParams(presetId);
+    const current  = await storage.loadSettings();
+    const updated  = { ...current, ...patch };
+    await storage.saveSettings(updated);
+    scanner.updateSettings(updated);
+    res.json({ success: true, preset: presetId, params: patch });
+  } catch (err) { res.status(400).json({ success: false, error: err.message }); }
+});
+
+// ── Section 5: Analytics insights (JSON-storage fallback) ─────────
+app.get('/api/analytics/insights', async (req, res) => {
+  try {
+    const tradesObj = await storage.loadTrades();
+    const closed    = tradesObj.closed || [];
+    const insights  = analytics.getInsightsFromTrades(closed);
+    const equity    = analytics.getEquityCurveFromTrades(closed, tradesObj.demoBalance || 10000);
+    const wins  = closed.filter(t => (t.realizedPnL ?? 0) > 0);
+    const losses= closed.filter(t => (t.realizedPnL ?? 0) <= 0);
+    const totalPnL = closed.reduce((s, t) => s + (t.realizedPnL ?? 0), 0);
+    const avgWin  = wins.length  ? wins.reduce( (s, t) => s + (t.realizedPnL ?? 0), 0) / wins.length  : 0;
+    const avgLoss = losses.length ? Math.abs(losses.reduce((s, t) => s + (t.realizedPnL ?? 0), 0) / losses.length) : 0;
+    const best  = closed.length ? Math.max(...closed.map(t => t.realizedPnL ?? 0)) : 0;
+    const worst = closed.length ? Math.min(...closed.map(t => t.realizedPnL ?? 0)) : 0;
+    res.json({
+      insights,
+      equity,
+      summary: {
+        totalTrades: closed.length,
+        wins:    wins.length,
+        losses:  losses.length,
+        winRate: closed.length ? +(wins.length / closed.length * 100).toFixed(1) : 0,
+        totalPnL: +totalPnL.toFixed(2),
+        avgWin:   +avgWin.toFixed(2),
+        avgLoss:  +avgLoss.toFixed(2),
+        bestTrade:  +best.toFixed(2),
+        worstTrade: +worst.toFixed(2),
+      },
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Section 6: Exchange key management ───────────────────────────
+app.get('/api/exchange/status', async (req, res) => {
+  try { res.json(await exchangeKeys.getExchangeStatus()); }
+  catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/exchange/keys', async (req, res) => {
+  try {
+    const { exchange, apiKey, apiSecret, mode } = req.body;
+    if (!exchange || !apiKey || !apiSecret) return res.status(400).json({ error: 'exchange, apiKey and apiSecret required' });
+    await exchangeKeys.setExchangeKeys(exchange, apiKey, apiSecret, mode || 'demo');
+    res.json({ success: true, exchange, mode: mode || 'demo' });
+  } catch (err) { res.status(400).json({ success: false, error: err.message }); }
+});
+
+app.post('/api/exchange/test', async (req, res) => {
+  try {
+    const { exchange, apiKey, apiSecret } = req.body;
+    if (!exchange || !apiKey || !apiSecret) return res.status(400).json({ error: 'exchange, apiKey and apiSecret required' });
+    const result = await exchangeKeys.testConnection(exchange, apiKey, apiSecret);
+    res.json(result);
+  } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+app.delete('/api/exchange/keys/:exchange', async (req, res) => {
+  try {
+    await exchangeKeys.clearExchangeKeys(req.params.exchange);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ success: false, error: err.message }); }
 });
 
 // ── Guard & Kill Switch API ───────────────────────────────────────

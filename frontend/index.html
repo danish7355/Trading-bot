@@ -74,7 +74,7 @@
     <button class="tab-btn" data-tab="nse">🇮🇳 NSE India</button>
     <button class="tab-btn" data-tab="commodities">🥇 Commodities</button>
     <button class="tab-btn" data-tab="nasdaq">📈 NASDAQ</button>
-    <a href="/dashboard.html" target="_blank" class="tab-btn" style="text-decoration:none;display:inline-flex;align-items:center;">🚀 Dashboard</a>
+    <button class="tab-btn" data-tab="dashboard">📊 Dashboard</button>
     <button class="tab-btn" data-tab="settings">⚙️ Settings</button>
     <button class="tab-btn" data-tab="debug">🛠 Debug</button>
   </nav>
@@ -188,6 +188,16 @@
 
   <!-- TAB 3: SIGNALS -->
   <div id="tab-signals" class="tab-content">
+
+    <!-- Section 3: Market sub-tabs (signals are never mixed across markets) -->
+    <div id="signals-market-tabs" style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center;">
+      <span style="color:var(--dim);font-size:0.8rem;">Market:</span>
+      <button class="signal-mkt-btn active" data-mkt="crypto" onclick="setSignalMarket('crypto')">₿ Crypto Futures</button>
+      <button class="signal-mkt-btn" disabled title="No live data feed connected yet — signals would be fabricated">🇮🇳 NSE India <span style="font-size:0.7em;opacity:.6;">(coming soon)</span></button>
+      <button class="signal-mkt-btn" disabled title="No live Forex data feed connected yet">💱 Forex <span style="font-size:0.7em;opacity:.6;">(coming soon)</span></button>
+      <button class="signal-mkt-btn" disabled title="NASDAQ signals shown in the NASDAQ tab">📈 US Stocks <span style="font-size:0.7em;opacity:.6;">(NASDAQ tab)</span></button>
+    </div>
+
     <div id="signals-filters">
       <input id="signal-search" placeholder="🔍 Search coin...">
       <select id="signal-filter-dir">
@@ -376,9 +386,43 @@
     </div>
   </div>
 
+  <!-- TAB: DASHBOARD (in-page) -->
+  <div id="tab-dashboard" class="tab-content">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:8px;">
+      <h3 style="margin:0;">📊 Performance Dashboard</h3>
+      <a href="/dashboard.html" target="_blank" class="action-btn" style="font-size:0.8rem;text-decoration:none;">↗ Full Analytics Charts</a>
+    </div>
+
+    <!-- KPI strip -->
+    <div id="dash-kpi-strip" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px;margin-bottom:20px;"></div>
+
+    <!-- Equity mini-chart -->
+    <div class="settings-card" style="margin-bottom:20px;">
+      <h4 style="margin:0 0 10px;">Equity Curve</h4>
+      <canvas id="dash-equity-chart" height="80" style="width:100%;"></canvas>
+      <p id="dash-equity-empty" style="color:var(--dim);font-size:0.85rem;text-align:center;display:none;">No completed trades yet — equity curve will appear here.</p>
+    </div>
+
+    <!-- Auto-generated insights -->
+    <div class="settings-card">
+      <h4 style="margin:0 0 10px;">🤖 Auto-Insights</h4>
+      <div id="dash-insights-list" style="display:flex;flex-direction:column;gap:8px;"></div>
+    </div>
+  </div>
+
   <!-- TAB 9: SETTINGS -->
   <div id="tab-settings" class="tab-content">
     <div class="settings-grid">
+
+      <!-- Section 4: Strategy Preset Selector -->
+      <div class="settings-card" style="grid-column:1/-1;">
+        <h3>🎯 Strategy Preset</h3>
+        <p style="color:var(--dim);font-size:0.82rem;margin:0 0 12px;">Applying a preset replaces ALL current strategy parameters — no blending. Only one preset is active at a time.</p>
+        <div id="preset-cards" style="display:flex;gap:12px;flex-wrap:wrap;"></div>
+        <p style="color:var(--amber);font-size:0.75rem;margin-top:10px;">⚠️ Historical win-rate and R:R figures are backtested estimates only. They do NOT constitute financial advice and past performance does not guarantee future results.</p>
+      </div>
+
+      <!-- General config -->
       <div class="settings-card">
         <h3>General Configuration</h3>
         <div class="form-group"><label>Auto-Trade Enabled</label><input type="checkbox" id="set-autotrade" checked></div>
@@ -390,41 +434,113 @@
           </select>
         </div>
         <div class="form-group"><label>Scan Coins Count</label><input type="number" id="set-scancoins" value="50"></div>
+        <div class="form-group"><label>Scan Interval (minutes)</label><input type="number" id="set-scaninterval" min="1" max="60" value="5"></div>
+        <div class="form-group"><label>TP % (take profit)</label><input type="number" id="set-tppct" step="0.1" value="3.75"></div>
+        <div class="form-group"><label>SL % (stop loss)</label><input type="number" id="set-slpct" step="0.1" value="1.5"></div>
       </div>
 
-      <div class="settings-card">
-        <h3>Exchange Settings</h3>
-        <div class="form-group">
-          <label>Exchange Mode</label>
-          <select id="set-exchange">
-            <option value="binance" selected>Binance (Paper Trading)</option>
-            <option value="delta">Delta Exchange</option>
-          </select>
-        </div>
-        <div class="form-group">
-          <label>Delta API Mode</label>
-          <select id="set-deltamode">
-            <option value="testnet" selected>Testnet</option>
-            <option value="live">Live Trading</option>
-          </select>
-        </div>
-        <button id="delta-live-btn" class="close-btn" style="background:var(--red);">ENABLE LIVE TRADING</button>
-      </div>
-
+      <!-- Risk & Execution -->
       <div class="settings-card">
         <h3>Risk &amp; Execution</h3>
         <div class="form-group"><label>Position Size (% of Balance)</label><input type="number" id="set-possize" value="5"></div>
         <div class="form-group"><label>Leverage (1-20x)</label><input type="number" id="set-leverage" value="10"></div>
         <div class="form-group"><label>Max Concurrent Trades</label><input type="number" id="set-maxtrades" value="3"></div>
+        <div class="form-group"><label>Daily Loss Cap (%)</label><input type="number" id="set-dailylosscap" step="0.5" value="5"></div>
+        <div class="form-group"><label>Weekly Loss Cap (%)</label><input type="number" id="set-weeklylosscap" step="1" value="10"></div>
+        <div class="form-group"><label>Post-Loss Cooldown (min)</label><input type="number" id="set-cooldown" value="30"></div>
         <button class="action-btn" id="reset-balance">Reset Demo Balance ($10k)</button>
       </div>
 
+      <!-- Section 6: Binance API keys -->
+      <div class="settings-card">
+        <h3>🔑 Binance API Keys</h3>
+        <p style="color:var(--dim);font-size:0.8rem;margin:0 0 10px;">Keys are stored server-side only — never exposed to the browser after entry.</p>
+        <div id="binance-key-status" class="exchange-key-status"></div>
+        <div class="form-group"><label>API Key</label><input type="password" id="binance-apikey" placeholder="Paste API key…" autocomplete="new-password"></div>
+        <div class="form-group"><label>API Secret</label><input type="password" id="binance-apisecret" placeholder="Paste API secret…" autocomplete="new-password"></div>
+        <div class="form-group">
+          <label>Mode</label>
+          <select id="binance-mode">
+            <option value="demo" selected>Demo / Paper (safe default)</option>
+            <option value="live">Live Trading ⚠️</option>
+          </select>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button class="action-btn" onclick="testExchangeKey('binance')">🔌 Test Connection</button>
+          <button class="action-btn" onclick="saveExchangeKey('binance')">💾 Save Keys</button>
+          <button class="close-btn" onclick="clearExchangeKey('binance')" style="font-size:0.8rem;padding:5px 10px;">🗑 Clear</button>
+        </div>
+        <div id="binance-key-result" style="margin-top:8px;font-size:0.8rem;"></div>
+      </div>
+
+      <!-- Section 6: Coinbase API keys -->
+      <div class="settings-card">
+        <h3>🔑 Coinbase Advanced Trade Keys</h3>
+        <p style="color:var(--dim);font-size:0.8rem;margin:0 0 10px;">Keys are stored server-side only — never exposed to the browser after entry.</p>
+        <div id="coinbase-key-status" class="exchange-key-status"></div>
+        <div class="form-group"><label>API Key</label><input type="password" id="coinbase-apikey" placeholder="Paste API key…" autocomplete="new-password"></div>
+        <div class="form-group"><label>API Secret</label><input type="password" id="coinbase-apisecret" placeholder="Paste API secret…" autocomplete="new-password"></div>
+        <div class="form-group">
+          <label>Mode</label>
+          <select id="coinbase-mode">
+            <option value="demo" selected>Demo / Paper (safe default)</option>
+            <option value="live">Live Trading ⚠️</option>
+          </select>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button class="action-btn" onclick="testExchangeKey('coinbase')">🔌 Test Connection</button>
+          <button class="action-btn" onclick="saveExchangeKey('coinbase')">💾 Save Keys</button>
+          <button class="close-btn" onclick="clearExchangeKey('coinbase')" style="font-size:0.8rem;padding:5px 10px;">🗑 Clear</button>
+        </div>
+        <div id="coinbase-key-result" style="margin-top:8px;font-size:0.8rem;"></div>
+      </div>
+
+      <!-- Section 6: Delta Exchange API keys -->
+      <div class="settings-card">
+        <h3>🔑 Delta Exchange API Keys</h3>
+        <p style="color:var(--dim);font-size:0.8rem;margin:0 0 10px;">Keys are stored server-side only. Live trading requires an explicit toggle — demo is the safe default.</p>
+        <div id="delta-key-status" class="exchange-key-status"></div>
+        <div class="form-group"><label>API Key</label><input type="password" id="delta-apikey" placeholder="Paste API key…" autocomplete="new-password"></div>
+        <div class="form-group"><label>API Secret</label><input type="password" id="delta-apisecret" placeholder="Paste API secret…" autocomplete="new-password"></div>
+        <div class="form-group">
+          <label>Mode</label>
+          <select id="set-deltamode">
+            <option value="testnet" selected>Testnet / Demo (safe default)</option>
+            <option value="live">Live Trading ⚠️</option>
+          </select>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button class="action-btn" onclick="testExchangeKey('delta')">🔌 Test Connection</button>
+          <button class="action-btn" onclick="saveExchangeKey('delta')">💾 Save Keys</button>
+          <button class="close-btn" onclick="clearExchangeKey('delta')" style="font-size:0.8rem;padding:5px 10px;">🗑 Clear</button>
+        </div>
+        <div id="delta-key-result" style="margin-top:8px;font-size:0.8rem;"></div>
+        <div style="margin-top:10px;">
+          <button id="delta-live-btn" class="close-btn" style="background:var(--red);">ENABLE LIVE TRADING</button>
+        </div>
+      </div>
+
+      <!-- Active Exchange selector -->
+      <div class="settings-card">
+        <h3>Active Exchange</h3>
+        <div class="form-group">
+          <label>Exchange (for scanner + execution)</label>
+          <select id="set-exchange">
+            <option value="binance" selected>Binance (Paper Trading)</option>
+            <option value="delta">Delta Exchange</option>
+            <option value="coinbase">Coinbase Advanced Trade</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Telegram Alerts -->
       <div class="settings-card">
         <h3>Telegram Alerts</h3>
         <div class="form-group"><label>Bot Token</label><input type="password" id="set-tgtoken" placeholder="Bot Token"></div>
         <div class="form-group"><label>Chat ID</label><input id="set-tgchatid" placeholder="Chat ID"></div>
         <button class="action-btn" id="test-telegram">Send Test Alert</button>
       </div>
+
     </div>
 
     <div style="margin-top:20px;">

@@ -834,3 +834,51 @@ td {
 
 #guard-badge-bar { display: none; }
 #guard-badge-bar.active { display: flex !important; }
+
+/* ── Section 3: Signal market sub-tabs ───────────────────────────── */
+#signals-market-tabs { border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+.signal-mkt-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--dim);
+  border-radius: 5px;
+  padding: 4px 12px;
+  cursor: pointer;
+  font-size: 0.82rem;
+  transition: all 0.2s;
+}
+.signal-mkt-btn:hover:not(:disabled) { border-color: var(--blue); color: var(--blue); }
+.signal-mkt-btn.active { background: var(--blue); border-color: var(--blue); color: #fff; font-weight: bold; }
+.signal-mkt-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ── Section 4: Strategy preset cards ───────────────────────────── */
+.preset-card {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px;
+  min-width: 220px;
+  max-width: 280px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.preset-card:hover { border-color: var(--blue); }
+.preset-card.preset-active { border-color: var(--green); box-shadow: 0 0 0 2px rgba(0,255,136,0.2); }
+.preset-name { font-weight: bold; font-size: 0.95rem; color: var(--text); }
+.preset-desc { font-size: 0.8rem; color: var(--dim); line-height: 1.4; }
+.preset-stats { display: flex; gap: 12px; font-size: 0.78rem; color: var(--dim); }
+.preset-stats strong { color: var(--text); }
+.preset-apply-btn { margin-top: auto; }
+.preset-card.preset-active .preset-apply-btn { background: var(--green); color: #000; }
+
+/* ── Section 5: Dashboard KPI + equity ──────────────────────────── */
+#dash-kpi-strip .green { color: var(--green); }
+#dash-kpi-strip .red   { color: var(--red);   }
+#dash-kpi-strip .amber { color: var(--amber); }
+
+/* ── Section 6: Exchange key status indicators ───────────────────── */
+.exchange-key-status { margin-bottom: 10px; font-size: 0.82rem; min-height: 20px; }
+.exchange-configured     { color: var(--green); }
+.exchange-not-configured { color: var(--dim); }

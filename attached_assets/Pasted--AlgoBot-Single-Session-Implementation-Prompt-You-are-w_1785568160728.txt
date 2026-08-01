@@ -1,0 +1,98 @@
+# AlgoBot — Single-Session Implementation Prompt
+
+You are working on an existing Node.js trading bot (paper trading, Binance futures/spot,
+WebSocket + REST hybrid, React/HTML dashboard, deployed on Replit/Render). Before writing
+any code, **inspect the current project structure** (backend/, frontend/, scanner.js,
+websocketManager.js, candle-fetching module, dashboard components, settings/config files)
+so you reuse existing patterns instead of rewriting working code. I have limited credits —
+work efficiently, touch only what's needed, and keep diffs as compact as possible while
+still being correct. Do all of the following in this session, in this order, and confirm
+each item works before moving to the next.
+
+---
+
+## 0. Ground rules (apply to every task below)
+- Do NOT break existing exported function signatures or the WebSocket reconnect logic
+  already in `websocketManager.js` (`connectPriceStream`, `schedulePriceReconnect`).
+- Do NOT reintroduce aggressive REST polling loops (this caused HTTP 418 IP bans before).
+  Any new REST calls must be rate-limited: respect `Retry-After` on 429, back off 5+ minutes
+  on 418, and never fire more than a few requests per second across all symbols.
+- Prefer editing/extending existing files over creating parallel new ones.
+- All new secrets (API keys/secrets) must go through environment variables / Replit
+  Secrets — never hardcoded or committed to the repo.
+- Default every exchange connection to **demo/testnet mode**. Live trading must require an
+  explicit, separate confirmation toggle in Settings — never default-on.
+
+---
+
+## 1. Fix the "Trade Guard Active — Stale Data" banner (root cause, not a patch)
+This banner means the frontend isn't getting real-time price ticks. Diagnose and fix:
+- Confirm whether the Binance WS (`connectPriceStream`) is actually delivering `message`
+  events after connecting — log a timestamp on every tick received, not just on connect.
+- The frontend's "live/stale" status must be derived from **time since last actual price
+  tick**, not from "socket handshake succeeded." A socket can be open with zero data
+  flowing — that's the current bug.
+- Add a backend watchdog: if no tick has been received for >15s while the WS reports
+  "open," log a clear warning and trigger a WS reconnect (don't wait for the socket to
+  close on its own).
+- Verify the candle-fetching module (logs `[CANDLES] All fallbacks failed`) isn't causing
+  request storms that get the IP flagged and silently throttled by Binance — this can
+  suppress WS data even when the socket looks connected. Rate-limit and stagger candle
+  fetches across symbols (small delay between requests, not all 120 at once).
+
+## 2. Live price "pulse" animation
+- On every price tick, briefly flash the price cell: green flash + up-tick if price
+  increased, red flash + down-tick if decreased, fading back to normal over ~400–600ms.
+- Pure CSS transition + a toggled class on tick (no animation library needed) — this
+  keeps it cheap on both bundle size and render cost.
+- Apply to every price cell in the signals table and dashboard price displays, not just
+  one place.
+
+## 3. Separate signals by market — never mixed
+- Signals tab must show **one market at a time**, in clearly separate sub-tabs or filters
+  (e.g. Crypto / Forex / Stocks / whatever markets you actually have data sources for —
+  do not fabricate signals for markets you have no real data feed for).
+- If only crypto (Binance) data currently exists, say so plainly in the UI (e.g. disable
+  or label other market tabs as "Coming soon") rather than mixing placeholder data into
+  the crypto signal list.
+- Backend: tag every signal object with its `market` field at the source, and never merge
+  arrays from different markets before sending to the frontend.
+
+## 4. Built-in strategy presets (single active strategy at a time)
+- Research and implement 2–3 well-documented, publicly-known technical strategies with
+  historically favorable win-rate and risk/reward characteristics — e.g. EMA
+  crossover + ADX trend filter, VWAP mean-reversion with volume confirmation, and a
+  breakout strategy with ATR-based stops. Target risk:reward of at least 1:3 on the
+  stop/target logic.
+- Be transparent in the UI that any stated win-rate/RR figures are historical/backtested
+  assumptions, not guarantees — this is not financial advice, and past performance of a
+  strategy doesn't guarantee future results.
+- Store strategies as separate, swappable config modules (not hardcoded inline logic) so
+  exactly one is "active" at a time — applying a new strategy via a single click must
+  fully replace the previous one's parameters, never blend two strategies' logic
+  together.
+
+## 5. Populate the Dashboard tab with real trade insights
+- Pull from the existing trade storage (whatever persists closed/open trades) to show:
+  equity curve over time, win rate, average win vs average loss, best/worst trade, and
+  total trades count.
+- Add 2–3 short auto-generated insight lines (e.g. "Win rate is highest on breakout
+  signals this week") computed from the actual stored trade data — not placeholder text.
+
+## 6. Settings tab as a real control room
+- Add exchange connection management for **Binance, Coinbase, and Delta Exchange**, each
+  with its own API key + secret input, and a Demo vs Live mode toggle per exchange.
+- Validate keys with a lightweight "test connection" call before saving, and store
+  secrets server-side only (never expose them to the frontend after entry).
+- Build a thin exchange-abstraction layer so the scanner/executor can work against
+  whichever exchange is currently selected, instead of being hardcoded to Binance.
+- Surface other real controls here too: active strategy selector (from #4), symbols/
+  markets being scanned, scan interval, and risk parameters — this tab should let an
+  admin actually operate the bot, not just toggle a couple of cosmetic options.
+
+---
+
+## Deliverable
+After implementing, give me a short summary of exactly what changed per section above,
+any assumptions you made about missing pieces (e.g. no existing Forex data source), and
+what still needs my input (e.g. real API keys for Delta/Coinbase to test live).

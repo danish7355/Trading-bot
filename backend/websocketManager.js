@@ -19,6 +19,10 @@ let lastKlineCheckTime = {};
 let hasReceivedPriceUpdate = false;
 let priceSeedFallbackTimer = null;
 
+// Section 1: tick watchdog — reconnect if socket is OPEN but silent for >15s
+let lastTickReceivedAt = 0;
+let tickWatchdogTimer   = null;
+
 // REST rate-limit state
 let restBlockedUntil = 0; // timestamp (ms) until which ALL REST ticker calls are disabled
 const REST_418_COOLDOWN_MS = 5 * 60 * 1000; // minimum 5 minutes after an HTTP 418 ban
@@ -167,8 +171,10 @@ function connectPriceStream(symbols) {
 
   priceWS.on('open', () => {
     priceReconnectAttempts = 0;
+    lastTickReceivedAt = 0; // reset — haven't received data yet on this connection
     console.log('[PRICE WS] ✅ Connected');
     if (broadcastFn) broadcastFn('SYSTEM_STATUS', { binanceConnected: true });
+    startTickWatchdog(symbols); // Section 1: begin silence watchdog
   });
 
   priceWS.on('message', (raw) => {
@@ -187,6 +193,7 @@ function connectPriceStream(symbols) {
       priceMap[symbol] = price;
       change24hMap[symbol] = change;
       hasReceivedPriceUpdate = true;
+      lastTickReceivedAt = Date.now(); // Section 1: track actual tick time
 
       if (onPriceTickCallback) {
         onPriceTickCallback(symbol, price);
@@ -200,6 +207,7 @@ function connectPriceStream(symbols) {
 
   priceWS.on('close', (code) => {
     if (broadcastFn) broadcastFn('SYSTEM_STATUS', { binanceConnected: false });
+    stopTickWatchdog();
     schedulePriceReconnect(symbols);
   });
 
@@ -332,10 +340,43 @@ function isConnected() {
   return Object.keys(priceMap).length > 0;
 }
 
+// ── Section 1: Tick silence watchdog ─────────────────────────────
+// If the socket is OPEN but no tick arrives for >15s, force-reconnect.
+// This catches "zombie" sockets that are connected but delivering no data.
+function startTickWatchdog(symbols) {
+  stopTickWatchdog();
+  tickWatchdogTimer = setInterval(() => {
+    if (!priceWS || priceWS.readyState !== WebSocket.OPEN) return;
+    if (lastTickReceivedAt === 0) return; // haven't received any tick yet this connection — give it more time via the seed fallback
+    const silenceMs = Date.now() - lastTickReceivedAt;
+    if (silenceMs > 15000) {
+      console.warn(`[PRICE WS] ⚠️ No tick for ${Math.round(silenceMs / 1000)}s while socket is OPEN — forcing reconnect`);
+      if (broadcastFn) broadcastFn('SYSTEM_STATUS', { binanceConnected: false, staleReason: 'silence_watchdog' });
+      stopTickWatchdog();
+      priceWS.terminate();
+      priceWS = null;
+      connectPriceStream(symbols);
+    }
+  }, 15000);
+}
+
+function stopTickWatchdog() {
+  if (tickWatchdogTimer) {
+    clearInterval(tickWatchdogTimer);
+    tickWatchdogTimer = null;
+  }
+}
+
+function getLastTickAge() {
+  if (lastTickReceivedAt === 0) return null; // never received
+  return Date.now() - lastTickReceivedAt;
+}
+
 function stopAllStreams() {
   if (priceWS) priceWS.terminate();
   if (klineWS) klineWS.terminate();
   if (priceSeedFallbackTimer) clearTimeout(priceSeedFallbackTimer);
+  stopTickWatchdog();
   priceWS = null;
   klineWS = null;
   priceSeedFallbackTimer = null;
@@ -355,5 +396,6 @@ module.exports = {
   getAllPrices,
   getChange24h,
   isConnected,
-  setOnPriceTick
+  setOnPriceTick,
+  getLastTickAge,
 };

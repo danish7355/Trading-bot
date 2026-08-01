@@ -377,6 +377,94 @@ function calculateAvgDuration(closedTrades) {
   return `${hours}h ${minutes}m`;
 }
 
+/**
+ * getInsightsFromTrades — auto-generated insight lines from raw trade array.
+ * Accepts the closed-trades array directly so it works with JSON storage
+ * when SQLite is unavailable.
+ * Returns an array of plain-English insight strings (2–4 items).
+ */
+function getInsightsFromTrades(closed = []) {
+  if (closed.length === 0) {
+    return ['No completed trades yet — insights will appear after your first trade closes.'];
+  }
+
+  const insights = [];
+
+  // Win rate overall
+  const wins   = closed.filter(t => (t.realizedPnL ?? t.pnl ?? 0) > 0);
+  const losses = closed.filter(t => (t.realizedPnL ?? t.pnl ?? 0) <= 0);
+  const winRate = +(wins.length / closed.length * 100).toFixed(1);
+  insights.push(`Overall win rate is ${winRate}% across ${closed.length} closed trade${closed.length !== 1 ? 's' : ''}.`);
+
+  // Best performing direction
+  const longTrades  = closed.filter(t => t.direction === 'LONG');
+  const shortTrades = closed.filter(t => t.direction === 'SHORT');
+  if (longTrades.length > 0 && shortTrades.length > 0) {
+    const longWR  = longTrades.filter(t  => (t.realizedPnL ?? t.pnl ?? 0) > 0).length / longTrades.length;
+    const shortWR = shortTrades.filter(t => (t.realizedPnL ?? t.pnl ?? 0) > 0).length / shortTrades.length;
+    const better  = longWR >= shortWR ? 'LONG' : 'SHORT';
+    const betterPct = +(Math.max(longWR, shortWR) * 100).toFixed(1);
+    insights.push(`${better} signals are outperforming — ${betterPct}% win rate vs ${+(Math.min(longWR, shortWR) * 100).toFixed(1)}% for ${better === 'LONG' ? 'SHORT' : 'LONG'}.`);
+  }
+
+  // Best trigger type
+  const byTrigger = {};
+  for (const t of closed) {
+    const trig = t.trigger || t.entryTrigger || 'UNKNOWN';
+    if (!byTrigger[trig]) byTrigger[trig] = { wins: 0, total: 0 };
+    byTrigger[trig].total++;
+    if ((t.realizedPnL ?? t.pnl ?? 0) > 0) byTrigger[trig].wins++;
+  }
+  const trigEntries = Object.entries(byTrigger).filter(([, v]) => v.total >= 2);
+  if (trigEntries.length > 1) {
+    const best = trigEntries.sort((a, b) => (b[1].wins / b[1].total) - (a[1].wins / a[1].total))[0];
+    insights.push(`Best trigger type: ${best[0]} with ${+(best[1].wins / best[1].total * 100).toFixed(0)}% win rate (${best[1].total} trades).`);
+  }
+
+  // Recent trend (last 5 trades)
+  if (closed.length >= 5) {
+    const recent5   = closed.slice(-5);
+    const recentWins = recent5.filter(t => (t.realizedPnL ?? t.pnl ?? 0) > 0).length;
+    const trend = recentWins >= 4 ? '🔥 hot streak' : recentWins <= 1 ? '⚠️ cold streak' : 'neutral';
+    if (trend !== 'neutral') {
+      insights.push(`Recent form: ${trend} — ${recentWins}/5 of your last trades were profitable.`);
+    }
+  }
+
+  return insights;
+}
+
+/**
+ * Equity curve from JSON trade storage (DB-free fallback).
+ */
+function getEquityCurveFromTrades(closed = [], startBalance = 10000) {
+  if (closed.length === 0) return [];
+
+  const dailyMap = {};
+  for (const t of closed) {
+    const ts = t.closedAt || t.closed_at;
+    if (!ts) continue;
+    const date = new Date(ts).toISOString().split('T')[0];
+    if (!dailyMap[date]) dailyMap[date] = { pnl: 0, wins: 0, losses: 0 };
+    const pnl = t.realizedPnL ?? t.pnl ?? 0;
+    dailyMap[date].pnl += pnl;
+    if (pnl > 0) dailyMap[date].wins++;
+    else dailyMap[date].losses++;
+  }
+
+  let balance = startBalance;
+  return Object.entries(dailyMap).sort().map(([date, data]) => {
+    balance += data.pnl;
+    return {
+      date,
+      balance:    +balance.toFixed(2),
+      daily_pnl:  +data.pnl.toFixed(2),
+      win_count:  data.wins,
+      loss_count: data.losses,
+    };
+  });
+}
+
 module.exports = {
   getSummary,
   getEquityCurve,
@@ -385,5 +473,7 @@ module.exports = {
   getByDirection,
   getRecentTrades,
   getBotEvents,
-  getStreakAnalysis
+  getStreakAnalysis,
+  getInsightsFromTrades,
+  getEquityCurveFromTrades,
 };

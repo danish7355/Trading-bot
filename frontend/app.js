@@ -691,9 +691,18 @@ function skipWMTrade(signalId) {
 async function loadSignals() {
   const dir = document.getElementById('signal-filter-dir')?.value || 'ALL';
   const res = document.getElementById('signal-filter-res')?.value || 'ALL';
-  const r   = await fetch(`/api/signals?direction=${dir}&result=${res}&limit=100`);
-  const data = await r.json();
-  if (data.signals) populateSignalTable(data.signals);
+  try {
+    const r    = await fetch(`/api/signals?direction=${dir}&result=${res}&limit=200`);
+    const data = await r.json();
+    if (!data.signals) return;
+    // Section 3: filter by active market (signals tagged at source; missing market defaults to 'crypto')
+    let sigs = data.signals.filter(s => (s.market || 'crypto') === (typeof activeSignalMarket !== 'undefined' ? activeSignalMarket : 'crypto'));
+    // Apply result filter client-side for finer control
+    if (res === 'FIRED')   sigs = sigs.filter(s => s.tradeFired);
+    else if (res === 'SKIPPED') sigs = sigs.filter(s => !s.tradeFired && s.gate1 !== 'FAIL' && s.gate2 !== 'FAIL');
+    else if (res === 'FAILED')  sigs = sigs.filter(s => s.gate1 === 'FAIL' || s.gate2 === 'FAIL' || s.gate3 === 'FAIL' || s.gate4 === 'FAIL');
+    populateSignalTable(sigs);
+  } catch (e) { console.warn('[loadSignals]', e.message); }
 }
 
 function populateSignalTable(signals) {
@@ -867,7 +876,8 @@ function setupTabNavigation() {
       if (tabContent) tabContent.classList.add('active');
       if (btn.dataset.tab === 'signals')    loadSignals();
       if (btn.dataset.tab === 'analytics')  loadAnalyticsData();
-      if (btn.dataset.tab === 'settings')   populateSettingsForm();
+      if (btn.dataset.tab === 'settings')   { populateSettingsForm(); loadStrategyPresets(); loadExchangeStatus(); }
+      if (btn.dataset.tab === 'dashboard')  loadDashboard();
       if (btn.dataset.tab === 'tradelog')   loadTradeLog();
       // Load market data when switching to market tabs
       if (['nse','commodities','nasdaq'].includes(btn.dataset.tab)) {
@@ -934,12 +944,18 @@ function setupSettingsHandlers() {
         autoTradeEnabled: document.getElementById('set-autotrade')?.checked,
         timeframe: document.getElementById('set-timeframe')?.value,
         scanCoins: parseInt(document.getElementById('set-scancoins')?.value || 50),
+        scanIntervalMinutes: parseInt(document.getElementById('set-scaninterval')?.value || 5),
         exchange:  document.getElementById('set-exchange')?.value,
         deltaMode: document.getElementById('set-deltamode')?.value,
+        tpPct:    parseFloat(document.getElementById('set-tppct')?.value  || 3.75),
+        slPct:    parseFloat(document.getElementById('set-slpct')?.value  || 1.5),
         trade: {
-          positionSizePct:    parseFloat(document.getElementById('set-possize')?.value   || 5),
-          leverage:           parseInt(document.getElementById('set-leverage')?.value     || 10),
-          maxConcurrentTrades:parseInt(document.getElementById('set-maxtrades')?.value   || 3)
+          positionSizePct:    parseFloat(document.getElementById('set-possize')?.value    || 5),
+          leverage:           parseInt(document.getElementById('set-leverage')?.value      || 10),
+          maxConcurrentTrades:parseInt(document.getElementById('set-maxtrades')?.value    || 3),
+          dailyLossCapPct:    parseFloat(document.getElementById('set-dailylosscap')?.value || 5),
+          weeklyLossCapPct:   parseFloat(document.getElementById('set-weeklylosscap')?.value || 10),
+          cooldownMinutes:    parseInt(document.getElementById('set-cooldown')?.value      || 30),
         },
         telegram: {
           botToken: document.getElementById('set-tgtoken')?.value,
@@ -1212,22 +1228,31 @@ async function loadAnalyticsData() {
 
 function populateSettingsForm() {
   if (!appSettings) return;
-  if (appSettings.autoTradeEnabled !== undefined) {
-    const el = document.getElementById('set-autotrade'); if (el) el.checked = appSettings.autoTradeEnabled;
-  }
-  if (appSettings.timeframe)  { const el = document.getElementById('set-timeframe');  if (el) el.value = appSettings.timeframe; }
-  if (appSettings.scanCoins)  { const el = document.getElementById('set-scancoins');  if (el) el.value = appSettings.scanCoins; }
-  if (appSettings.exchange)   { const el = document.getElementById('set-exchange');   if (el) el.value = appSettings.exchange; }
-  if (appSettings.deltaMode)  { const el = document.getElementById('set-deltamode');  if (el) el.value = appSettings.deltaMode; }
+  const set = (id, val) => { const el = document.getElementById(id); if (el && val !== undefined && val !== null) { if (el.type === 'checkbox') el.checked = val; else el.value = val; } };
+  set('set-autotrade', appSettings.autoTradeEnabled);
+  set('set-timeframe',    appSettings.timeframe);
+  set('set-scancoins',    appSettings.scanCoins);
+  set('set-scaninterval', appSettings.scanIntervalMinutes);
+  set('set-exchange',     appSettings.exchange);
+  set('set-deltamode',    appSettings.deltaMode);
+  set('set-tppct',        appSettings.tpPct);
+  set('set-slpct',        appSettings.slPct);
   if (appSettings.trade) {
-    if (appSettings.trade.positionSizePct)    { const el = document.getElementById('set-possize');  if (el) el.value = appSettings.trade.positionSizePct; }
-    if (appSettings.trade.leverage)           { const el = document.getElementById('set-leverage'); if (el) el.value = appSettings.trade.leverage; }
-    if (appSettings.trade.maxConcurrentTrades){ const el = document.getElementById('set-maxtrades');if (el) el.value = appSettings.trade.maxConcurrentTrades; }
+    set('set-possize',      appSettings.trade.positionSizePct);
+    set('set-leverage',     appSettings.trade.leverage);
+    set('set-maxtrades',    appSettings.trade.maxConcurrentTrades);
+    set('set-dailylosscap', appSettings.trade.dailyLossCapPct);
+    set('set-weeklylosscap',appSettings.trade.weeklyLossCapPct);
+    set('set-cooldown',     appSettings.trade.cooldownMinutes);
   }
   if (appSettings.telegram) {
-    if (appSettings.telegram.botToken) { const el = document.getElementById('set-tgtoken');  if (el) el.value = appSettings.telegram.botToken; }
-    if (appSettings.telegram.chatId)   { const el = document.getElementById('set-tgchatid'); if (el) el.value = appSettings.telegram.chatId; }
+    set('set-tgtoken',  appSettings.telegram.botToken);
+    set('set-tgchatid', appSettings.telegram.chatId);
   }
+  // Highlight active preset
+  document.querySelectorAll('.preset-card').forEach(c => {
+    c.classList.toggle('preset-active', c.dataset.presetId === appSettings.activePreset);
+  });
 }
 
 window.toggleRanging = function() {
@@ -1464,3 +1489,267 @@ setTimeout(async () => {
     }
   } catch (e) { /* ignore on load */ }
 }, 2000);
+
+// ══════════════════════════════════════════════════════════════
+// SECTION 3 — Signal market sub-tabs
+// ══════════════════════════════════════════════════════════════
+
+let activeSignalMarket = 'crypto';
+
+function setSignalMarket(mkt) {
+  activeSignalMarket = mkt;
+  document.querySelectorAll('.signal-mkt-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.mkt === mkt);
+  });
+  loadSignals();
+}
+
+// Market filtering is applied inside the original loadSignals (patched below)
+
+// ══════════════════════════════════════════════════════════════
+// SECTION 4 — Strategy preset cards (Settings tab)
+// ══════════════════════════════════════════════════════════════
+
+async function loadStrategyPresets() {
+  try {
+    const res   = await fetch('/api/strategy/presets');
+    const data  = await res.json();
+    const container = document.getElementById('preset-cards');
+    if (!container) return;
+    const activeId = appSettings?.activePreset || '';
+    container.innerHTML = (data.presets || []).map(p => `
+      <div class="preset-card ${p.id === activeId ? 'preset-active' : ''}" data-preset-id="${p.id}">
+        <div class="preset-name">${p.name}</div>
+        <div class="preset-desc">${p.description}</div>
+        <div class="preset-stats">
+          <span>Win Rate: <strong>${p.winRate}</strong></span>
+          <span>R:R: <strong>${p.rr}</strong></span>
+        </div>
+        <button class="action-btn preset-apply-btn" onclick="applyPreset('${p.id}')">
+          ${p.id === activeId ? '✅ Active' : '▶ Apply'}
+        </button>
+      </div>
+    `).join('');
+  } catch (e) { console.warn('[presets]', e.message); }
+}
+
+async function applyPreset(presetId) {
+  if (!confirm(`Apply strategy preset?\n\nThis will replace ALL current strategy parameters with the "${presetId}" preset settings. This cannot be undone without manually re-entering values.\n\nProceed?`)) return;
+  try {
+    const res  = await fetch('/api/strategy/preset/apply', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ presetId }),
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast(`✅ Strategy preset "${presetId}" applied — parameters updated`, 'success', 6000);
+      // Refresh form with new params
+      const settingsRes = await fetch('/api/settings');
+      const settingsData = await settingsRes.json();
+      if (settingsData.settings) { appSettings = settingsData.settings; populateSettingsForm(); }
+      await loadStrategyPresets();
+    } else {
+      showToast('Error: ' + data.error, 'error');
+    }
+  } catch (e) { showToast('Failed: ' + e.message, 'error'); }
+}
+
+// ══════════════════════════════════════════════════════════════
+// SECTION 5 — Dashboard (in-page)
+// ══════════════════════════════════════════════════════════════
+
+async function loadDashboard() {
+  try {
+    const res  = await fetch('/api/analytics/insights');
+    const data = await res.json();
+    renderDashboardKPIs(data.summary || {});
+    renderDashboardEquity(data.equity || []);
+    renderDashboardInsights(data.insights || []);
+  } catch (e) {
+    const container = document.getElementById('dash-insights-list');
+    if (container) container.innerHTML = `<p style="color:var(--dim);">Unable to load insights: ${e.message}</p>`;
+  }
+}
+
+function renderDashboardKPIs(s) {
+  const strip = document.getElementById('dash-kpi-strip');
+  if (!strip) return;
+  const kpis = [
+    { label: 'Total Trades', value: s.totalTrades || 0, cls: '' },
+    { label: 'Win Rate',     value: (s.winRate || 0) + '%', cls: s.winRate >= 50 ? 'green' : 'amber' },
+    { label: 'Total P&L',   value: '$' + (s.totalPnL || 0).toFixed(2), cls: (s.totalPnL || 0) >= 0 ? 'green' : 'red' },
+    { label: 'Avg Win',     value: '$' + (s.avgWin || 0).toFixed(2), cls: 'green' },
+    { label: 'Avg Loss',    value: '$' + (s.avgLoss || 0).toFixed(2), cls: 'red' },
+    { label: 'Best Trade',  value: '$' + (s.bestTrade || 0).toFixed(2), cls: 'green' },
+    { label: 'Worst Trade', value: '$' + (s.worstTrade || 0).toFixed(2), cls: 'red' },
+    { label: 'Wins / Losses', value: `${s.wins||0} / ${s.losses||0}`, cls: '' },
+  ];
+  strip.innerHTML = kpis.map(k => `
+    <div style="background:var(--card-bg);border:1px solid var(--border);border-radius:8px;padding:12px;text-align:center;">
+      <div style="font-size:0.75rem;color:var(--dim);margin-bottom:4px;">${k.label}</div>
+      <div style="font-size:1.2rem;font-weight:bold;" class="${k.cls}">${k.value}</div>
+    </div>
+  `).join('');
+}
+
+function renderDashboardEquity(curve) {
+  const canvas = document.getElementById('dash-equity-chart');
+  const empty  = document.getElementById('dash-equity-empty');
+  if (!canvas) return;
+  if (!curve || curve.length === 0) {
+    canvas.style.display = 'none';
+    if (empty) empty.style.display = 'block';
+    return;
+  }
+  canvas.style.display = 'block';
+  if (empty) empty.style.display = 'none';
+  const ctx = canvas.getContext('2d');
+  const w = canvas.offsetWidth || 600;
+  const h = canvas.offsetHeight || 80;
+  canvas.width = w;
+  canvas.height = h;
+  const balances = curve.map(p => p.balance);
+  const minB = Math.min(...balances);
+  const maxB = Math.max(...balances);
+  const range = maxB - minB || 1;
+  ctx.clearRect(0, 0, w, h);
+  // Gradient fill
+  const grad = ctx.createLinearGradient(0, 0, 0, h);
+  grad.addColorStop(0, 'rgba(0,255,136,0.35)');
+  grad.addColorStop(1, 'rgba(0,255,136,0.02)');
+  ctx.beginPath();
+  curve.forEach((p, i) => {
+    const x = (i / (curve.length - 1)) * w;
+    const y = h - ((p.balance - minB) / range) * (h - 4);
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  });
+  ctx.lineTo(w, h);
+  ctx.lineTo(0, h);
+  ctx.closePath();
+  ctx.fillStyle = grad;
+  ctx.fill();
+  // Line
+  ctx.beginPath();
+  curve.forEach((p, i) => {
+    const x = (i / (curve.length - 1)) * w;
+    const y = h - ((p.balance - minB) / range) * (h - 4);
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  });
+  ctx.strokeStyle = '#00ff88';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+}
+
+function renderDashboardInsights(insights) {
+  const el = document.getElementById('dash-insights-list');
+  if (!el) return;
+  if (!insights || insights.length === 0) {
+    el.innerHTML = '<p style="color:var(--dim);">No insights yet — trade history is empty.</p>';
+    return;
+  }
+  el.innerHTML = insights.map(txt => `
+    <div style="background:rgba(0,255,136,0.06);border-left:3px solid var(--green);padding:10px 14px;border-radius:4px;font-size:0.88rem;">
+      💡 ${txt}
+    </div>
+  `).join('');
+}
+
+// ══════════════════════════════════════════════════════════════
+// SECTION 6 — Exchange key management (Settings tab)
+// ══════════════════════════════════════════════════════════════
+
+async function loadExchangeStatus() {
+  try {
+    const res  = await fetch('/api/exchange/status');
+    const data = await res.json();
+    for (const [exchange, info] of Object.entries(data)) {
+      const statusEl = document.getElementById(exchange + '-key-status');
+      if (statusEl) {
+        if (info.configured) {
+          statusEl.innerHTML = `<span class="exchange-configured">✅ Configured — Key: ${info.keyHint} | Mode: <strong>${info.mode}</strong> | Updated: ${info.updatedAt?.split('T')[0] || '?'}</span>`;
+        } else {
+          statusEl.innerHTML = `<span class="exchange-not-configured">⚪ Not configured — enter keys below</span>`;
+        }
+      }
+      const modeEl = document.getElementById(exchange + '-mode') || document.getElementById('set-deltamode');
+      if (modeEl && info.mode && exchange !== 'delta') modeEl.value = info.mode;
+    }
+  } catch (e) { console.warn('[exchange status]', e.message); }
+}
+
+async function testExchangeKey(exchange) {
+  const keyEl    = document.getElementById(exchange + '-apikey');
+  const secretEl = document.getElementById(exchange + '-apisecret');
+  const resultEl = document.getElementById(exchange + '-key-result');
+  const apiKey    = keyEl?.value?.trim();
+  const apiSecret = secretEl?.value?.trim();
+  if (!apiKey || !apiSecret) {
+    if (resultEl) resultEl.innerHTML = '<span style="color:var(--amber);">Enter API key and secret first.</span>';
+    return;
+  }
+  if (resultEl) resultEl.innerHTML = '<span style="color:var(--dim);">Testing…</span>';
+  try {
+    const res  = await fetch('/api/exchange/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ exchange, apiKey, apiSecret }),
+    });
+    const data = await res.json();
+    if (resultEl) {
+      resultEl.innerHTML = data.success
+        ? `<span style="color:var(--green);">✅ ${data.message}</span>`
+        : `<span style="color:var(--red);">❌ ${data.message}</span>`;
+    }
+  } catch (e) {
+    if (resultEl) resultEl.innerHTML = `<span style="color:var(--red);">❌ ${e.message}</span>`;
+  }
+}
+
+async function saveExchangeKey(exchange) {
+  const keyEl    = document.getElementById(exchange + '-apikey');
+  const secretEl = document.getElementById(exchange + '-apisecret');
+  const modeEl   = document.getElementById(exchange + '-mode') || (exchange === 'delta' ? document.getElementById('set-deltamode') : null);
+  const resultEl = document.getElementById(exchange + '-key-result');
+  const apiKey    = keyEl?.value?.trim();
+  const apiSecret = secretEl?.value?.trim();
+  const mode      = modeEl?.value || 'demo';
+  if (!apiKey || !apiSecret) {
+    if (resultEl) resultEl.innerHTML = '<span style="color:var(--amber);">Enter both API key and secret.</span>';
+    return;
+  }
+  if (mode === 'live') {
+    if (!confirm(`⚠️ LIVE MODE WARNING\n\nYou are about to save LIVE trading keys for ${exchange.toUpperCase()}.\n\nLive mode places REAL orders with REAL money. Make sure you understand the risks.\n\nProceed with LIVE mode?`)) return;
+  }
+  try {
+    const res  = await fetch('/api/exchange/keys', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ exchange, apiKey, apiSecret, mode }),
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast(`✅ ${exchange} keys saved (${mode} mode)`, 'success');
+      if (keyEl) keyEl.value = '';
+      if (secretEl) secretEl.value = '';
+      if (resultEl) resultEl.innerHTML = `<span style="color:var(--green);">✅ Keys saved securely server-side.</span>`;
+      await loadExchangeStatus();
+    } else {
+      if (resultEl) resultEl.innerHTML = `<span style="color:var(--red);">❌ ${data.error}</span>`;
+    }
+  } catch (e) {
+    if (resultEl) resultEl.innerHTML = `<span style="color:var(--red);">❌ ${e.message}</span>`;
+  }
+}
+
+async function clearExchangeKey(exchange) {
+  if (!confirm(`Remove stored API keys for ${exchange.toUpperCase()}?\n\nThis cannot be undone — you'll need to re-enter the keys.`)) return;
+  try {
+    const res  = await fetch(`/api/exchange/keys/${exchange}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (data.success) {
+      showToast(`🗑 ${exchange} keys cleared`, 'info');
+      await loadExchangeStatus();
+    }
+  } catch (e) { showToast('Failed: ' + e.message, 'error'); }
+}
