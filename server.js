@@ -80,9 +80,11 @@ async function sendInitialState(ws) {
       currentPrices,
       demoBalance: trades.demoBalance ?? 10000,
       dailyPnL: scanner.getDailyStats(),
+      priceFeed: websocketManager.getPriceFeedProvider(),
       systemStatus: {
         uptime: process.uptime(),
         binanceConnected: websocketManager.isConnected(),
+        provider: websocketManager.getPriceFeedProvider().active,
         scannerRunning: scanner.isRunning(),
         lastScanTime: scanner.getLastScanTime(),
         scanHeartbeat: scanner.getLastAutoScanHeartbeat(),
@@ -166,8 +168,10 @@ async function applySettingsUpdate(newSettings) {
 
   if (timeframeChanged || scanCoinsChanged) {
     console.log(`[SETTINGS] Re-loading data — TF:${updated.timeframe}, Coins:${numCoins}`);
+    console.log(`[SETTINGS] Calling startPriceStream from settings handler`);
     const coinList = await binanceData.getTopCoins(numCoins);
     websocketManager.startPriceStream(coinList, (symbol, price) => scanner.onPriceTick(symbol, price));
+    console.log(`[SETTINGS] startPriceStream returned from settings handler`);
     websocketManager.restartKlineStream(coinList, updated.timeframe || '4h', (sym, closeTime) => {
       scanner.onCandleClose(sym, closeTime);
     });
@@ -531,12 +535,29 @@ app.get('/api/delta/positions', async (req, res) => {
 // ── Section 1: WS tick-age diagnostic ────────────────────────────
 app.get('/api/ws/status', (req, res) => {
   const ageMs = websocketManager.getLastTickAge();
+  const freshnessStatus = websocketManager.getFreshnessStatus();
   res.json({
     connected:    websocketManager.isConnected(),
     lastTickAgeMs: ageMs,
     lastTickAgeSec: ageMs !== null ? Math.round(ageMs / 1000) : null,
+    freshnessStatus: freshnessStatus,
     stale:        ageMs !== null && ageMs > 15000,
+    priceFeed:    websocketManager.getPriceFeedProvider(),
   });
+});
+
+app.get('/api/price-feed/source', (req, res) => {
+  res.json(websocketManager.getPriceFeedProvider());
+});
+
+app.post('/api/price-feed/source', (req, res) => {
+  const { provider } = req.body || {};
+  if (['auto', 'binance', 'bybit', 'coinbase'].includes(provider)) {
+    websocketManager.setPriceFeedProvider(provider);
+    res.json({ success: true, ...websocketManager.getPriceFeedProvider() });
+  } else {
+    res.status(400).json({ error: 'Invalid provider. Must be auto, binance, bybit, or coinbase' });
+  }
 });
 
 // ── Section 3: Strategy presets ───────────────────────────────────
@@ -802,17 +823,45 @@ async function main() {
   console.log(`[✅] ${coinList.length} coins loaded`);
 
   console.log('[⏳] Fetching initial candle data...');
-  await scanner.loadInitialData(coinList, settings);
-  console.log('[✅] Candle data loaded');
+  try {
+    // Add timeout to prevent hanging
+    const loadPromise = scanner.loadInitialData(coinList, settings);
+    const timeoutPromise = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error('Candle data load timeout after 30s')), 30000)
+    );
+    await Promise.race([loadPromise, timeoutPromise]);
+    console.log('[✅] Candle data loaded');
+  } catch (err) {
+    console.error('[SERVER] Candle data load ERROR:', err.message, err.stack);
+    // Continue anyway - don't block WebSocket init
+    console.log('[SERVER] Continuing with WebSocket init despite candle data error');
+  }
 
+  console.log('[SERVER] *** AFTER CANDLE LOAD, BEFORE WEBSOCKET ***');
+  console.log('[SERVER] *** BEFORE WEBSOCKET INIT ***');
   console.log('[⏳] Starting WebSocket streams...');
-  websocketManager.setBroadcast(broadcast);
-  websocketManager.setOnPriceTick((symbol, price) => scanner.onPriceTick(symbol, price));
-  websocketManager.startPriceStream(coinList);
-  websocketManager.startKlineStream(coinList, settings.timeframe || '4h', (sym, closeTime) => {
-    scanner.onCandleClose(sym, closeTime);
-  });
-  console.log('[✅] Binance WebSocket connected');
+  
+  try {
+    // setBroadcast already wired at startup with guard routing — don't overwrite
+    websocketManager.setOnPriceTick((symbol, price) => {
+      scanner.onPriceTick(symbol, price);
+      tradingGuard.notifyPriceTick(symbol);
+    });
+    
+    console.log(`[SERVER] About to call startPriceStream with ${coinList.length} symbols`);
+    console.log(`[SERVER] startPriceStream function type:`, typeof websocketManager.startPriceStream);
+    
+    websocketManager.startPriceStream(coinList);
+    console.log(`[SERVER] startPriceStream returned`);
+    
+    websocketManager.startKlineStream(coinList, settings.timeframe || '4h', (sym, closeTime) => {
+      scanner.onCandleClose(sym, closeTime);
+    });
+    console.log('[✅] Binance WebSocket connected');
+  } catch (err) {
+    console.error('[SERVER] WebSocket initialization ERROR:', err.message, err.stack);
+    throw err;
+  }
 
   if (process.env.DELTA_API_KEY) {
     const deltaRes = await deltaExchange.testConnection();

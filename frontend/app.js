@@ -130,6 +130,7 @@ function handleBackendMessage(msg) {
     // Section 3: guard events
     case 'GUARD_STATE_CHANGED':  handleGuardStateChanged(msg.data); break;
     case 'GUARD_BLOCKED':        handleGuardBlocked(msg.data); break;
+    case 'PRICE_FEED_CHANGED':   handlePriceFeedChanged(msg.data); break;
     default:
       // silently ignore unknown types
   }
@@ -142,6 +143,10 @@ function initializeFromState(state) {
 
   const demoBalEl = document.getElementById('demo-balance');
   if (demoBalEl) demoBalEl.textContent = '$' + (state.demoBalance ?? 10000).toLocaleString('en-US', { minimumFractionDigits: 2 });
+
+  if (state.priceFeed) {
+    handlePriceFeedChanged(state.priceFeed);
+  }
 
   if (state.currentPrices) Object.assign(currentPrices, state.currentPrices);
 
@@ -256,13 +261,15 @@ setInterval(() => {
 
 // ── Price updates ─────────────────────────────────────────────────
 
+let activePriceProvider = 'bybit';
 let totalTicksReceived = 0;
 
 function handlePriceUpdate(priceData) {
   totalTicksReceived += Object.keys(priceData).length;
   const tickBadge = document.getElementById('live-ticks-badge');
   if (tickBadge) {
-    tickBadge.textContent = `⚡ LIVE STREAM: ${totalTicksReceived} Ticks`;
+    const provLabel = activePriceProvider.toUpperCase();
+    tickBadge.textContent = `⚡ [${provLabel}] ${totalTicksReceived} Ticks`;
     tickBadge.className   = 'badge badge-active';
   }
 
@@ -307,6 +314,36 @@ function handlePriceUpdate(priceData) {
   }
 
   updateTopBarTotalPnL();
+}
+
+// ── Price Feed Provider Selection ─────────────────────────────────
+
+function changePriceFeed(provider) {
+  fetch('/api/price-feed/source', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ provider }),
+  })
+    .then(r => r.json())
+    .then(data => {
+      if (data.selected) handlePriceFeedChanged(data);
+    })
+    .catch(err => console.error('[FEED] Failed to change price feed:', err));
+}
+
+function handlePriceFeedChanged(data) {
+  if (data.selected) {
+    const selectEl = document.getElementById('price-feed-select');
+    if (selectEl) selectEl.value = data.selected;
+  }
+  if (data.active) {
+    activePriceProvider = data.active;
+    // Update the badge immediately so user sees the switch
+    const tickBadge = document.getElementById('live-ticks-badge');
+    if (tickBadge) {
+      tickBadge.textContent = `⚡ [${data.active.toUpperCase()}] ${totalTicksReceived} Ticks`;
+    }
+  }
 }
 
 function recalculateTradePnL(trade, currentPrice) {
@@ -453,12 +490,13 @@ function createScannerRow(coin, rank) {
     (coin.gate1 === 'PASS' && coin.gate2 === 'PASS' && coin.gate3 === 'PASS' && coin.gate4 === 'PASS') ? 'row-all-gates' : '',
     coin.wmState === 'READY' ? 'row-wm-ready' : ''
   ].filter(Boolean).join(' ');
+  const displayPrice = currentPrices[coin.symbol] || coin.price || 0;
   return `<tr id="row-${coin.symbol}" class="${rowClass}">
     <td>${rank}</td>
     <td class="symbol-cell" onclick="openChartOverlay('${coin.symbol}')" style="cursor:pointer;font-weight:bold">
       ${coin.symbol.replace('USDT','')} <span class="pair-suffix">USDT</span>
     </td>
-    <td id="price-${coin.symbol}" class="price-cell mono">$${formatPrice(coin.price||0)}</td>
+    <td id="price-${coin.symbol}" data-price="${displayPrice}" class="price-cell mono">$${formatPrice(displayPrice)}</td>
     <td id="change-${coin.symbol}" class="${(coin.change24h||0)>=0?'green':'red'}">${(coin.change24h||0)>=0?'+':''}${(coin.change24h||0).toFixed(2)}%</td>
     <td class="score-cell ${getScoreClass(coin.score?.total||coin.score)}">${scoreDisplay}</td>
     <td>${direction}</td>
@@ -1288,7 +1326,6 @@ setInterval(() => {
   });
 }, 10000);
 
-// Enhanced price cell update with ↑↓ arrows
 function animatePriceCell(symbol, newPrice, oldPrice) {
   priceLastTickMs[symbol] = Date.now();
   const priceEl = document.getElementById('price-' + symbol);
@@ -1297,12 +1334,14 @@ function animatePriceCell(symbol, newPrice, oldPrice) {
   // Remove existing stale badge
   document.getElementById('stale-' + symbol)?.remove();
 
+  const prevRendered = parseFloat(priceEl.dataset.price);
   const formatted = '$' + formatPrice(newPrice);
-  if (priceEl.textContent === formatted) return;
   priceEl.textContent = formatted;
+  priceEl.dataset.price = newPrice;
 
-  if (oldPrice && newPrice !== oldPrice) {
-    const isUp = newPrice > oldPrice;
+  const compareVal = !isNaN(prevRendered) ? prevRendered : oldPrice;
+  if (compareVal && newPrice !== compareVal) {
+    const isUp = newPrice > compareVal;
     priceEl.classList.remove('price-flash-up', 'price-flash-down');
     void priceEl.offsetWidth; // reflow
     priceEl.classList.add(isUp ? 'price-flash-up' : 'price-flash-down');

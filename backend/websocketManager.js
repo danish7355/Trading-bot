@@ -1,13 +1,20 @@
 const WebSocket = require('ws');
 const axios = require('axios');
 
+console.log('[PRICE WS] === MODULE LOADED === File:', __filename);
+
 // In-memory price map — always current
 const priceMap = {};
 const change24hMap = {};
+const lastTickAtMap = {}; // per-symbol freshness tracking
 let priceWS = null;
 let klineWS = null;
+let priceWSConnections = []; // array of WS connections for batched streams
+let klineWSConnections = []; // array of WS connections for batched streams
 let priceReconnectAttempts = 0;
 let klineReconnectAttempts = 0;
+let priceReconnectTimeout = null;
+let klineReconnectTimeout = null;
 let currentSymbols = [];
 let currentTimeframe = '4h';
 let onCandleCloseCallback = null;
@@ -18,6 +25,11 @@ let lastKlineCheckTime = {};
 // One-time REST fallback state (replaces the old 1.5s polling loop)
 let hasReceivedPriceUpdate = false;
 let priceSeedFallbackTimer = null;
+
+// Multi-exchange feed state
+let userSelectedProvider = 'auto'; // 'auto' | 'binance' | 'bybit' | 'coinbase'
+let activeProvider = 'bybit';     // resolved active provider
+const PROVIDER_ORDER = ['bybit', 'binance', 'coinbase'];
 
 // Section 1: tick watchdog — reconnect if socket is OPEN but silent for >15s
 let lastTickReceivedAt = 0;
@@ -38,16 +50,22 @@ function setBroadcast(fn) {
 // ══════════════════════════════════════════
 
 function startPriceStream(symbols, priceTickCb = null) {
+  console.log('[PRICE WS] *** FUNCTION ENTRY ***');
+  console.log(`[PRICE WS] === START PRICE STREAM === symbols: ${symbols?.length || 0}`);
   currentSymbols = symbols;
   if (priceTickCb) onPriceTickCallback = priceTickCb;
 
   hasReceivedPriceUpdate = false;
 
-  if (priceWS) {
-    priceWS.terminate();
-    priceWS = null;
-  }
-  connectPriceStream(symbols);
+  // Terminate all existing price WS connections
+  priceWSConnections.forEach(ws => {
+    if (ws) { ws.removeAllListeners(); ws.terminate(); }
+  });
+  priceWSConnections = [];
+  priceWS = null;
+  if (priceReconnectTimeout) { clearTimeout(priceReconnectTimeout); priceReconnectTimeout = null; }
+
+  connectPriceStreamBatches(symbols);
 
   // If the WebSocket hasn't delivered a single price update within
   // REST_FALLBACK_DELAY_MS, do ONE REST fetch to seed initial prices, then stop.
@@ -157,63 +175,208 @@ async function seedInitialPricesOnce(symbols) {
   console.log(`[REST TICKER] One-time REST seed complete — seeded ${Object.keys(updates).length} symbol(s). REST polling stays off; WS is now the sole price source.`);
 }
 
-function connectPriceStream(symbols) {
-  if (!symbols || symbols.length === 0) return;
+// Split symbols into batches and connect multiple WS connections based on activeProvider
+function connectPriceStreamBatches(symbols) {
+  if (!symbols || symbols.length === 0) {
+    console.log('[PRICE WS] No symbols to connect');
+    return;
+  }
 
-  const streams = symbols.slice(0, 30) // Only subscribe to top 30 on WS stream URL to keep length short
-    .map(s => s.toLowerCase() + '@ticker')
-    .join('/');
-
-  const url = 'wss://fstream.binance.com/stream?streams=' + streams;
-
-  console.log('[PRICE WS] Connecting to ticker stream...');
-  priceWS = new WebSocket(url);
-
-  priceWS.on('open', () => {
-    priceReconnectAttempts = 0;
-    lastTickReceivedAt = 0; // reset — haven't received data yet on this connection
-    console.log('[PRICE WS] ✅ Connected');
-    if (broadcastFn) broadcastFn('SYSTEM_STATUS', { binanceConnected: true });
-    startTickWatchdog(symbols); // Section 1: begin silence watchdog
+  // Clean up ALL existing price connections to prevent accumulation
+  priceWSConnections.forEach(ws => {
+    if (ws) { ws.removeAllListeners(); ws.terminate(); }
   });
+  priceWSConnections = [];
+  priceWS = null;
+  if (priceReconnectTimeout) { clearTimeout(priceReconnectTimeout); priceReconnectTimeout = null; }
 
-  priceWS.on('message', (raw) => {
-    try {
-      const msg = JSON.parse(raw);
-      const data = msg.data || msg;
+  const provider = activeProvider;
+  console.log(`[PRICE WS] Connecting public WS stream using provider: [${provider.toUpperCase()}] for ${symbols.length} symbols...`);
 
-      if (!data || !data.s) return;
+  if (provider === 'bybit') {
+    connectBybitPublicWS(symbols);
+  } else if (provider === 'coinbase') {
+    connectCoinbasePublicWS(symbols);
+  } else {
+    connectBinancePublicWS(symbols);
+  }
+}
 
-      const symbol = data.s;
-      const price = parseFloat(data.c);
-      const change = parseFloat(data.P);
+function recordPriceTick(symbol, price, change) {
+  if (isNaN(price) || price <= 0) return;
+  priceMap[symbol] = price;
+  if (!isNaN(change)) change24hMap[symbol] = change;
+  lastTickAtMap[symbol] = Date.now();
 
-      if (isNaN(price) || price <= 0) return;
+  hasReceivedPriceUpdate = true;
+  lastTickReceivedAt = Date.now();
 
-      priceMap[symbol] = price;
-      change24hMap[symbol] = change;
-      hasReceivedPriceUpdate = true;
-      lastTickReceivedAt = Date.now(); // Section 1: track actual tick time
+  if (onPriceTickCallback) {
+    onPriceTickCallback(symbol, price);
+  }
+  schedulePriceBroadcast(symbol, price, change24hMap[symbol] || 0);
+}
 
-      if (onPriceTickCallback) {
-        onPriceTickCallback(symbol, price);
+function connectBybitPublicWS(symbols) {
+  try {
+    const ws = new WebSocket('wss://stream.bybit.com/v5/public/linear');
+    priceWSConnections.push(ws);
+    priceWS = ws;
+
+    ws.on('open', () => {
+      priceReconnectAttempts = 0;
+      console.log(`[PRICE WS] ✅ Bybit Public WS connected for ${symbols.length} symbols`);
+      if (broadcastFn) broadcastFn('SYSTEM_STATUS', { binanceConnected: true, provider: 'bybit' });
+
+      // Subscribe in chunks of 20
+      const BATCH_SIZE = 20;
+      for (let i = 0; i < symbols.length; i += BATCH_SIZE) {
+        const chunk = symbols.slice(i, i + BATCH_SIZE);
+        const args = chunk.map(s => `tickers.${s.toUpperCase()}`);
+        ws.send(JSON.stringify({ op: 'subscribe', args }));
       }
+      startTickWatchdog(symbols);
+    });
 
-      schedulePriceBroadcast(symbol, price, change);
-    } catch (e) {
-      console.error('[PRICE WS] Message parse error:', e.message);
-    }
-  });
+    ws.on('message', (raw) => {
+      try {
+        const msg = JSON.parse(raw);
+        if (msg.topic && msg.topic.startsWith('tickers.') && msg.data) {
+          const d = msg.data;
+          const symbol = d.symbol;
+          const price = parseFloat(d.lastPrice || d.bid1Price || d.ask1Price);
+          const change = d.price24hPcnt ? parseFloat(d.price24hPcnt) * 100 : undefined;
+          if (symbol && !isNaN(price)) {
+            recordPriceTick(symbol, price, change);
+          }
+        }
+      } catch (e) {}
+    });
 
-  priceWS.on('close', (code) => {
-    if (broadcastFn) broadcastFn('SYSTEM_STATUS', { binanceConnected: false });
-    stopTickWatchdog();
-    schedulePriceReconnect(symbols);
-  });
+    ws.on('close', (code) => {
+      console.log(`[PRICE WS] Bybit WS closed (code: ${code})`);
+      if (broadcastFn) broadcastFn('SYSTEM_STATUS', { binanceConnected: false });
+      stopTickWatchdog();
+      schedulePriceReconnect(symbols);
+    });
 
-  priceWS.on('error', (err) => {
-    console.error('[PRICE WS] Error:', err.message);
-  });
+    ws.on('error', (err) => {
+      console.error('[PRICE WS] Bybit WS error:', err.message);
+    });
+  } catch (err) {
+    console.error('[PRICE WS] Bybit connection failed:', err.message);
+  }
+}
+
+function connectCoinbasePublicWS(symbols) {
+  try {
+    const ws = new WebSocket('wss://ws-feed.exchange.coinbase.com');
+    priceWSConnections.push(ws);
+    priceWS = ws;
+
+    const productIds = symbols.map(s => s.replace(/USDT$/, '-USD'));
+
+    ws.on('open', () => {
+      priceReconnectAttempts = 0;
+      console.log(`[PRICE WS] ✅ Coinbase Public WS connected for ${symbols.length} symbols`);
+      if (broadcastFn) broadcastFn('SYSTEM_STATUS', { binanceConnected: true, provider: 'coinbase' });
+
+      ws.send(JSON.stringify({
+        type: 'subscribe',
+        product_ids: productIds,
+        channels: ['ticker']
+      }));
+      startTickWatchdog(symbols);
+    });
+
+    ws.on('message', (raw) => {
+      try {
+        const msg = JSON.parse(raw);
+        if (msg.type === 'ticker' && msg.product_id && msg.price) {
+          const symbol = msg.product_id.replace(/-USD$/, 'USDT');
+          const price = parseFloat(msg.price);
+          const open24h = parseFloat(msg.open_24h);
+          const change = open24h > 0 ? ((price - open24h) / open24h) * 100 : undefined;
+          if (symbol && !isNaN(price)) {
+            recordPriceTick(symbol, price, change);
+          }
+        }
+      } catch (e) {}
+    });
+
+    ws.on('close', (code) => {
+      console.log(`[PRICE WS] Coinbase WS closed (code: ${code})`);
+      if (broadcastFn) broadcastFn('SYSTEM_STATUS', { binanceConnected: false });
+      stopTickWatchdog();
+      schedulePriceReconnect(symbols);
+    });
+
+    ws.on('error', (err) => {
+      console.error('[PRICE WS] Coinbase WS error:', err.message);
+    });
+  } catch (err) {
+    console.error('[PRICE WS] Coinbase connection failed:', err.message);
+  }
+}
+
+function connectBinancePublicWS(symbols) {
+  const BATCH_SIZE = 40;
+  const batches = [];
+  for (let i = 0; i < symbols.length; i += BATCH_SIZE) {
+    batches.push(symbols.slice(i, i + BATCH_SIZE));
+  }
+
+  console.log(`[PRICE WS] Connecting ${batches.length} Binance batch(es) for ${symbols.length} symbols...`);
+
+  try {
+    batches.forEach((batch, batchIndex) => {
+      const streams = batch
+        .map(s => s.toLowerCase() + '@bookTicker')
+        .join('/');
+
+      const url = 'wss://fstream.binance.com/stream?streams=' + streams;
+      const ws = new WebSocket(url);
+
+      priceWSConnections.push(ws);
+      if (batchIndex === 0) priceWS = ws;
+
+      ws.on('open', () => {
+        priceReconnectAttempts = 0;
+        console.log(`[PRICE WS] ✅ Binance Batch ${batchIndex + 1}/${batches.length} connected (${batch.length} symbols)`);
+        if (broadcastFn && batchIndex === 0) broadcastFn('SYSTEM_STATUS', { binanceConnected: true, provider: 'binance' });
+        if (batchIndex === 0) startTickWatchdog(symbols);
+      });
+
+      ws.on('message', (raw) => {
+        try {
+          const msg = JSON.parse(raw);
+          const data = msg.data || msg;
+          if (!data || !data.s) return;
+
+          const symbol = data.s;
+          const price = parseFloat(data.b || data.c || data.a);
+          const change = parseFloat(data.P || 0);
+
+          if (symbol && !isNaN(price)) {
+            recordPriceTick(symbol, price, change);
+          }
+        } catch (e) {}
+      });
+
+      ws.on('close', (code) => {
+        console.log(`[PRICE WS] Binance Batch ${batchIndex + 1} closed (code: ${code})`);
+        if (broadcastFn && batchIndex === 0) broadcastFn('SYSTEM_STATUS', { binanceConnected: false });
+        if (batchIndex === 0) stopTickWatchdog();
+        schedulePriceReconnect(symbols);
+      });
+
+      ws.on('error', (err) => {
+        console.error('[PRICE WS] Binance Batch ${batchIndex + 1} ERROR:', err.message);
+      });
+    });
+  } catch (err) {
+    console.error('[PRICE WS] Binance batch connection error:', err.message);
+  }
 }
 
 const pendingPriceUpdates = {};
@@ -236,9 +399,13 @@ function schedulePriceBroadcast(symbol, price, change) {
 }
 
 function schedulePriceReconnect(symbols) {
+  if (priceReconnectTimeout) return; // debounce: reconnect already scheduled
   const delay = Math.min(1000 * Math.pow(2, priceReconnectAttempts), 8000);
   priceReconnectAttempts++;
-  setTimeout(() => connectPriceStream(symbols), delay);
+  priceReconnectTimeout = setTimeout(() => {
+    priceReconnectTimeout = null;
+    connectPriceStreamBatches(symbols);
+  }, delay);
 }
 
 // ══════════════════════════════════════════
@@ -248,80 +415,118 @@ function schedulePriceReconnect(symbols) {
 function startKlineStream(symbols, timeframe, onCandleClose) {
   currentTimeframe = timeframe;
   if (onCandleClose) onCandleCloseCallback = onCandleClose;
-  if (klineWS) {
-    klineWS.terminate();
-    klineWS = null;
-  }
-  connectKlineStream(symbols, timeframe);
+
+  // Terminate all existing kline WS connections
+  klineWSConnections.forEach(ws => {
+    if (ws) { ws.removeAllListeners(); ws.terminate(); }
+  });
+  klineWSConnections = [];
+  klineWS = null;
+  if (klineReconnectTimeout) { clearTimeout(klineReconnectTimeout); klineReconnectTimeout = null; }
+
+  connectKlineStreamBatches(symbols, timeframe);
 }
 
-function connectKlineStream(symbols, timeframe) {
+// Split symbols into batches and connect multiple kline WS connections
+function connectKlineStreamBatches(symbols, timeframe) {
   if (!symbols || symbols.length === 0) return;
 
-  const streams = symbols.slice(0, 30)
-    .map(s => s.toLowerCase() + '@kline_' + timeframe)
-    .join('/');
-
-  const url = 'wss://fstream.binance.com/stream?streams=' + streams;
-
-  console.log('[KLINE WS] Connecting for timeframe:', timeframe);
-  klineWS = new WebSocket(url);
-
-  klineWS.on('open', () => {
-    klineReconnectAttempts = 0;
-    console.log('[KLINE WS] ✅ Connected — monitoring candle closes');
+  // Clean up ALL existing kline connections to prevent accumulation
+  klineWSConnections.forEach(ws => {
+    if (ws) { ws.removeAllListeners(); ws.terminate(); }
   });
+  klineWSConnections = [];
+  klineWS = null;
+  if (klineReconnectTimeout) { clearTimeout(klineReconnectTimeout); klineReconnectTimeout = null; }
 
-  klineWS.on('message', (raw) => {
-    try {
-      const msg = JSON.parse(raw);
-      const eventData = msg.data || msg;
-      const kline = eventData.k;
-      if (!kline) return;
+  const BATCH_SIZE = 40;
+  const batches = [];
+  for (let i = 0; i < symbols.length; i += BATCH_SIZE) {
+    batches.push(symbols.slice(i, i + BATCH_SIZE));
+  }
 
-      const symbol = eventData.s || kline.s;
-      const isClosed = kline.x;
+  console.log(`[KLINE WS] Connecting ${batches.length} batch(es) for ${symbols.length} symbols @ ${timeframe}...`);
 
-      if (isClosed === true) {
-        console.log('[KLINE] Candle CLOSED — ' + symbol + ' at ' + new Date(kline.T).toISOString());
+  batches.forEach((batch, batchIndex) => {
+    const streams = batch
+      .map(s => s.toLowerCase() + '@kline_' + timeframe)
+      .join('/');
 
-        if (onCandleCloseCallback) {
-          onCandleCloseCallback(symbol, kline.T, {
-            open: parseFloat(kline.o),
-            high: parseFloat(kline.h),
-            low: parseFloat(kline.l),
-            close: parseFloat(kline.c),
-            volume: parseFloat(kline.v),
-            closeTime: kline.T
-          });
+    const url = 'wss://fstream.binance.com/stream?streams=' + streams;
+    const ws = new WebSocket(url);
+
+    klineWSConnections.push(ws);
+    if (batchIndex === 0) klineWS = ws; // Keep first connection for backward compatibility
+
+    ws.on('open', () => {
+      klineReconnectAttempts = 0;
+      console.log(`[KLINE WS] ✅ Batch ${batchIndex + 1}/${batches.length} connected (${batch.length} symbols)`);
+    });
+
+    ws.on('message', (raw) => {
+      try {
+        const msg = JSON.parse(raw);
+        const eventData = msg.data || msg;
+        const kline = eventData.k;
+        if (!kline) return;
+
+        const symbol = eventData.s || kline.s;
+        const isClosed = kline.x;
+
+        if (isClosed === true) {
+          console.log('[KLINE] Candle CLOSED — ' + symbol + ' at ' + new Date(kline.T).toISOString());
+
+          if (onCandleCloseCallback) {
+            onCandleCloseCallback(symbol, kline.T, {
+              open: parseFloat(kline.o),
+              high: parseFloat(kline.h),
+              low: parseFloat(kline.l),
+              close: parseFloat(kline.c),
+              volume: parseFloat(kline.v),
+              closeTime: kline.T
+            });
+          }
         }
+      } catch (e) {
+        console.error('[KLINE WS] Message parse error:', e.message);
       }
-    } catch (e) {
-      console.error('[KLINE WS] Message parse error:', e.message);
-    }
-  });
+    });
 
-  klineWS.on('close', () => {
-    scheduleKlineReconnect(symbols, timeframe);
-  });
+    ws.on('close', (code) => {
+      console.log(`[KLINE WS] Batch ${batchIndex + 1} closed (code: ${code})`);
+      scheduleKlineReconnect(symbols, timeframe);
+    });
 
-  klineWS.on('error', (err) => {
-    console.error('[KLINE WS] Error:', err.message);
+    ws.on('error', (err) => {
+      console.error(`[KLINE WS] Batch ${batchIndex + 1} error:`, err.message);
+    });
   });
 }
 
 function scheduleKlineReconnect(symbols, timeframe) {
+  if (klineReconnectTimeout) return; // debounce: reconnect already scheduled
   const delay = Math.min(1000 * Math.pow(2, klineReconnectAttempts), 8000);
   klineReconnectAttempts++;
-  setTimeout(() => connectKlineStream(symbols, timeframe), delay);
+  klineReconnectTimeout = setTimeout(() => {
+    klineReconnectTimeout = null;
+    connectKlineStreamBatches(symbols, timeframe);
+  }, delay);
 }
 
 function restartKlineStream(symbols, newTimeframe, onCandleClose) {
   console.log('[KLINE WS] Restarting for new timeframe:', newTimeframe);
   currentTimeframe = newTimeframe;
   if (onCandleClose) onCandleCloseCallback = onCandleClose;
-  if (klineWS) klineWS.terminate();
-  connectKlineStream(symbols, newTimeframe);
+
+  // Terminate all existing kline WS connections
+  klineWSConnections.forEach(ws => {
+    if (ws) { ws.removeAllListeners(); ws.terminate(); }
+  });
+  klineWSConnections = [];
+  klineWS = null;
+  if (klineReconnectTimeout) { clearTimeout(klineReconnectTimeout); klineReconnectTimeout = null; }
+
+  connectKlineStreamBatches(symbols, newTimeframe);
 }
 
 function getCurrentPrice(symbol) {
@@ -340,22 +545,62 @@ function isConnected() {
   return Object.keys(priceMap).length > 0;
 }
 
+function setPriceFeedProvider(provider) {
+  if (!['auto', 'binance', 'bybit', 'coinbase'].includes(provider)) return;
+  userSelectedProvider = provider;
+  if (provider === 'auto') {
+    activeProvider = 'bybit';
+  } else {
+    activeProvider = provider;
+  }
+  console.log(`[PRICE WS] Price feed provider set to: user=${userSelectedProvider}, active=${activeProvider}`);
+  if (broadcastFn) {
+    broadcastFn('PRICE_FEED_CHANGED', { selected: userSelectedProvider, active: activeProvider });
+  }
+  if (currentSymbols.length > 0) {
+    connectPriceStreamBatches(currentSymbols);
+  }
+}
+
+function getPriceFeedProvider() {
+  return { selected: userSelectedProvider, active: activeProvider };
+}
+
 // ── Section 1: Tick silence watchdog ─────────────────────────────
-// If the socket is OPEN but no tick arrives for >15s, force-reconnect.
-// This catches "zombie" sockets that are connected but delivering no data.
+// If active feed is silent for >15s, auto-failover (in 'auto' mode) or force reconnect.
 function startTickWatchdog(symbols) {
   stopTickWatchdog();
   tickWatchdogTimer = setInterval(() => {
-    if (!priceWS || priceWS.readyState !== WebSocket.OPEN) return;
-    if (lastTickReceivedAt === 0) return; // haven't received any tick yet this connection — give it more time via the seed fallback
+    const hasOpenConnection = priceWSConnections.some(ws => ws && ws.readyState === WebSocket.OPEN);
+    if (!hasOpenConnection) return;
+
+    if (lastTickReceivedAt === 0) return;
     const silenceMs = Date.now() - lastTickReceivedAt;
+
     if (silenceMs > 15000) {
-      console.warn(`[PRICE WS] ⚠️ No tick for ${Math.round(silenceMs / 1000)}s while socket is OPEN — forcing reconnect`);
+      if (userSelectedProvider === 'auto') {
+        const currentIdx = PROVIDER_ORDER.indexOf(activeProvider);
+        const nextIdx = (currentIdx + 1) % PROVIDER_ORDER.length;
+        const oldProv = activeProvider;
+        activeProvider = PROVIDER_ORDER[nextIdx];
+        console.warn(`[PRICE WS] ⚠️ Auto-failover triggered after ${Math.round(silenceMs / 1000)}s silence: switching [${oldProv.toUpperCase()}] -> [${activeProvider.toUpperCase()}]`);
+        if (broadcastFn) {
+          broadcastFn('PRICE_FEED_CHANGED', { selected: 'auto', active: activeProvider, failover: true });
+        }
+      } else {
+        console.warn(`[PRICE WS] ⚠️ No tick for ${Math.round(silenceMs / 1000)}s on [${activeProvider.toUpperCase()}] — forcing reconnect`);
+      }
+
       if (broadcastFn) broadcastFn('SYSTEM_STATUS', { binanceConnected: false, staleReason: 'silence_watchdog' });
       stopTickWatchdog();
-      priceWS.terminate();
+
+      priceWSConnections.forEach(ws => {
+        if (ws) { ws.removeAllListeners(); ws.terminate(); }
+      });
+      priceWSConnections = [];
       priceWS = null;
-      connectPriceStream(symbols);
+
+      connectPriceStreamBatches(symbols);
     }
   }, 15000);
 }
@@ -372,19 +617,67 @@ function getLastTickAge() {
   return Date.now() - lastTickReceivedAt;
 }
 
+// Per-symbol freshness tracking
+function getSymbolTickAge(symbol) {
+  const lastTick = lastTickAtMap[symbol];
+  if (!lastTick) return null; // never received for this symbol
+  return Date.now() - lastTick;
+}
+
+function isSymbolFresh(symbol, thresholdMs = 15000) {
+  const age = getSymbolTickAge(symbol);
+  if (age === null) return false; // no data yet
+  return age <= thresholdMs;
+}
+
+function getFreshnessStatus() {
+  const status = {
+    global: {
+      lastTickAt: lastTickReceivedAt,
+      ageMs: getLastTickAge(),
+      isFresh: getLastTickAge() !== null && getLastTickAge() <= 15000
+    },
+    symbols: {}
+  };
+
+  // Add per-symbol freshness for currently tracked symbols
+  Object.keys(lastTickAtMap).forEach(symbol => {
+    const age = getSymbolTickAge(symbol);
+    status.symbols[symbol] = {
+      lastTickAt: lastTickAtMap[symbol],
+      ageMs: age,
+      isFresh: age !== null && age <= 15000
+    };
+  });
+
+  return status;
+}
+
 function stopAllStreams() {
-  if (priceWS) priceWS.terminate();
-  if (klineWS) klineWS.terminate();
+  priceWSConnections.forEach(ws => {
+    if (ws) { ws.removeAllListeners(); ws.terminate(); }
+  });
+  klineWSConnections.forEach(ws => {
+    if (ws) { ws.removeAllListeners(); ws.terminate(); }
+  });
   if (priceSeedFallbackTimer) clearTimeout(priceSeedFallbackTimer);
+  if (priceReconnectTimeout) clearTimeout(priceReconnectTimeout);
+  if (klineReconnectTimeout) clearTimeout(klineReconnectTimeout);
   stopTickWatchdog();
+  priceWSConnections = [];
+  klineWSConnections = [];
   priceWS = null;
   klineWS = null;
   priceSeedFallbackTimer = null;
+  priceReconnectTimeout = null;
+  klineReconnectTimeout = null;
 }
 
 function setOnPriceTick(cb) {
   onPriceTickCallback = cb;
 }
+
+console.log('[PRICE WS] === EXPORTING MODULE === startPriceStream:', typeof startPriceStream);
 
 module.exports = {
   setBroadcast,
@@ -398,4 +691,9 @@ module.exports = {
   isConnected,
   setOnPriceTick,
   getLastTickAge,
+  getSymbolTickAge,
+  isSymbolFresh,
+  getFreshnessStatus,
+  setPriceFeedProvider,
+  getPriceFeedProvider,
 };

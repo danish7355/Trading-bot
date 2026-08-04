@@ -226,6 +226,13 @@ async function handle4GateTrade(symbol, result) {
   const guardResult = await tradingGuard.guardTrade(signal, { dailyPnL: dailyStats.pnl, balance: demoBalance });
   if (guardResult.blocked) return;
 
+  // Section 4: per-symbol freshness check - refuse to trade on stale data
+  const tickAge = websocketManager.getSymbolTickAge(symbol);
+  if (tickAge !== null && tickAge > 15000) {
+    console.log(`[TRADE GUARD] Skipped auto-trade on ${symbol} — price data stale (${Math.round(tickAge / 1000)}s old)`);
+    return;
+  }
+
   const entryPrice = websocketManager.getCurrentPrice(symbol) || signal.signalCandleClose;
   const trade      = tradeManager.createTrade(signal, entryPrice, result.atr, result.fib, settingsRef);
 
@@ -265,6 +272,13 @@ async function handleWMTrade(symbol, result) {
   const demoBalance = await storage.getDemoBalance();
   const guardResult = await tradingGuard.guardTrade(signal, { dailyPnL: dailyStats.pnl, balance: demoBalance });
   if (guardResult.blocked) return;
+
+  // Section 4: per-symbol freshness check - refuse to trade on stale data
+  const tickAge = websocketManager.getSymbolTickAge(symbol);
+  if (tickAge !== null && tickAge > 15000) {
+    console.log(`[TRADE GUARD] Skipped WM auto-trade on ${symbol} — price data stale (${Math.round(tickAge / 1000)}s old)`);
+    return;
+  }
 
   const countdownSec = settingsRef.wm?.countdownSeconds || 10;
   await sleep(countdownSec * 1000);

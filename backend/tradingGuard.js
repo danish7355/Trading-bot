@@ -6,6 +6,7 @@
 
 const fs      = require('fs').promises;
 const path    = require('path');
+const websocketManager = require('./websocketManager');
 
 const GUARD_STATE_FILE = path.join(__dirname, '..', 'data', 'guard_state.json');
 const GUARD_LOG_FILE   = path.join(__dirname, '..', 'data', 'guard_log.json');
@@ -164,9 +165,10 @@ function isKillSwitchActive() {
 // ── Condition evaluators ──────────────────────────────────────────
 
 function checkStaleData() {
-  const staleThresholdMs = 60 * 1000; // 60 seconds
-  const ageMsAgo         = Date.now() - guardState.lastPriceUpdateMs;
-  return ageMsAgo > staleThresholdMs;
+  const staleThresholdMs = 15 * 1000; // 15 seconds - using real tick freshness
+  const globalTickAge = websocketManager.getLastTickAge();
+  if (globalTickAge === null) return false; // no data yet, don't block
+  return globalTickAge > staleThresholdMs;
 }
 
 function checkWsDisconnected() {
@@ -261,7 +263,10 @@ function buildReason(conditionId) {
   switch (conditionId) {
     case 'kill_switch_active':     return 'Kill switch is ON — all trading halted';
     case 'websocket_disconnected': return 'WebSocket is disconnected — price feed unreliable';
-    case 'stale_data_active':      return `Last price update was ${Math.round((Date.now() - guardState.lastPriceUpdateMs)/1000)}s ago (>60s threshold)`;
+    case 'stale_data_active':      {
+      const tickAge = websocketManager.getLastTickAge();
+      return `Last price tick was ${tickAge !== null ? Math.round(tickAge / 1000) : 'unknown'}s ago (>15s threshold)`;
+    }
     case 'database_write_failed':  return 'Last DB write failed — refusing to trade on bad state';
     case 'exchange_unreachable':   return 'Exchange API health check failed';
     case 'daily_loss_cap_hit':     return `Daily loss cap hit (${settingsRef.trade?.dailyLossLimitPct || 5}%)`;

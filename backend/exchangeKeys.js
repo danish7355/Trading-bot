@@ -33,11 +33,12 @@ async function saveKeys(keysObj) {
 
 // ── Public API ────────────────────────────────────────────────────
 
-/** Save API key + secret for an exchange. Mode is 'demo' or 'live'. */
 async function setExchangeKeys(exchange, apiKey, apiSecret, mode = 'demo') {
   if (!SUPPORTED.includes(exchange)) throw new Error(`Unsupported exchange: ${exchange}`);
   const all = await loadKeys();
-  all[exchange] = { apiKey, apiSecret, mode, updatedAt: new Date().toISOString() };
+  const cleanKey = typeof apiKey === 'string' ? apiKey.trim() : apiKey;
+  const cleanSecret = typeof apiSecret === 'string' ? apiSecret.trim() : apiSecret;
+  all[exchange] = { apiKey: cleanKey, apiSecret: cleanSecret, mode, updatedAt: new Date().toISOString() };
   await saveKeys(all);
 }
 
@@ -76,21 +77,29 @@ async function clearExchangeKeys(exchange) {
 // ── Connection tests ─────────────────────────────────────────────
 
 async function testBinanceConnection(apiKey, apiSecret) {
+  const cleanKey = typeof apiKey === 'string' ? apiKey.trim() : apiKey;
+  const cleanSecret = typeof apiSecret === 'string' ? apiSecret.trim() : apiSecret;
   try {
     const crypto = require('crypto');
     const ts  = Date.now();
     const qs  = `timestamp=${ts}`;
-    const sig = crypto.createHmac('sha256', apiSecret).update(qs).digest('hex');
+    const sig = crypto.createHmac('sha256', cleanSecret).update(qs).digest('hex');
     const url = `https://api.binance.com/api/v3/account?${qs}&signature=${sig}`;
     const res = await axios.get(url, {
-      headers: { 'X-MBX-APIKEY': apiKey },
+      headers: { 'X-MBX-APIKEY': cleanKey },
       timeout: 8000,
     });
     return { success: true, message: `Binance OK — account type: ${res.data.accountType || 'SPOT'}` };
   } catch (err) {
+    const bnData = err.response?.data;
+    const bnCode = bnData?.code;
+    const bnMsg  = bnData?.msg || err.message;
+    console.error(`[BINANCE API AUTH ERROR] Status: ${err.response?.status} | Code: ${bnCode} | Msg: ${bnMsg}`);
     const status = err.response?.status;
-    if (status === 401 || status === 403) return { success: false, message: 'Invalid API key or insufficient permissions' };
-    return { success: false, message: err.message };
+    if (status === 401 || status === 403 || bnCode === -2015) {
+      return { success: false, message: `Invalid API key or insufficient permissions (Binance code ${bnCode || status}: ${bnMsg})` };
+    }
+    return { success: false, message: `Binance error (${bnCode || err.message}): ${bnMsg}` };
   }
 }
 

@@ -59,6 +59,16 @@
       Scan: <span id="last-scan-time">--:--:--</span>
       <span id="scan-heartbeat-badge" class="badge badge-hb-pending" title="Auto-scan heartbeat">⏳</span>
     </div>
+    <!-- Public Feed Source Selector -->
+    <div style="display:flex;align-items:center;gap:4px;margin-right:6px;">
+      <label for="price-feed-select" style="font-size:0.75rem;color:var(--text-dim);">Feed:</label>
+      <select id="price-feed-select" onchange="changePriceFeed(this.value)" style="background:var(--bg-card);color:var(--text-main);border:1px solid var(--border);border-radius:4px;padding:2px 6px;font-size:0.75rem;">
+        <option value="auto">⚡ Auto (Failover)</option>
+        <option value="bybit">Bybit Public</option>
+        <option value="binance">Binance Public</option>
+        <option value="coinbase">Coinbase Public</option>
+      </select>
+    </div>
     <div id="connection-status" class="connection-badge status-connecting">⏳ Connecting...</div>
     <!-- Kill switch button - always visible in top bar -->
     <button id="kill-switch-btn" onclick="toggleKillSwitch()" style="background:var(--red);color:#fff;border:none;border-radius:6px;padding:5px 14px;font-weight:bold;font-size:0.85rem;cursor:pointer;margin-left:8px;">⛔ KILL SWITCH</button>
