@@ -1265,7 +1265,7 @@ function populateSettingsForm() {
   const set = (id, val) => { const el = document.getElementById(id); if (el && val !== undefined && val !== null) { if (el.type === 'checkbox') el.checked = val; else el.value = val; } };
   set('set-autotrade', appSettings.autoTradeEnabled);
   set('set-timeframe',    appSettings.timeframe);
-  set('set-strategyengine', appSettings.strategyEngine || (appSettings.activePreset === 'smc-structure' ? 'v2' : 'v1'));
+  set('set-strategyengine', appSettings.strategyEngine || (appSettings.activePreset === 'smc-confluence' ? 'v3' : appSettings.activePreset === 'smc-structure' ? 'v2' : 'v1'));
   set('set-scancoins',    appSettings.scanCoins);
   set('set-scaninterval', appSettings.scanIntervalMinutes);
   set('set-exchange',     appSettings.exchange);
@@ -1307,7 +1307,8 @@ async function changeStrategyEngine(strategyEngine) {
     }
     const data = await res.json();
     if (data.success) {
-      showToast(`🧠 Strategy Engine switched to: ${strategyEngine === 'v2' ? 'Price Action / SMC (v2)' : '10-Gate EMA + ADX (v1)'}`, 'success', 5000);
+      const engineName = strategyEngine === 'v3' ? 'SMC + Bollinger Confluence (v3)' : strategyEngine === 'v2' ? 'Price Action / SMC (v2)' : '10-Gate EMA + ADX (v1)';
+      showToast(`🧠 Strategy Engine switched to: ${engineName}`, 'success', 5000);
     }
   } catch (e) {
     console.error('[STRATEGY ENGINE SWITCH ERROR]', e.message);

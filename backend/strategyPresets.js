@@ -88,6 +88,27 @@ const PRESETS = {
       wm: { lookback: 25, v2TolerancePct: 2 },
     },
   },
+  'smc-confluence': {
+    id:          'smc-confluence',
+    name:        'SMC + Bollinger Confluence (v3)',
+    description: 'Price Action & SMC Engine v3. Adds EMA5 trend-health + reversal doji & Bollinger extension triggers with band-walk regime gating and adaptive weights.',
+    winRate:     '63–68%',
+    rr:          '1:3.2+',
+    disclaimer:  'These figures are backtested estimates. Past performance does not guarantee future results.',
+    params: {
+      strategyEngine:   'v3',
+      confidence_threshold: 0.55,
+      wick_body_min:    1.5,
+      ema_fast:         5,
+      bb_length:        20,
+      bb_std:           2.0,
+      doji_body_max_pct: 0.20,
+      ema_gap_atr_mult: 0.35,
+      tpPct:            4.5,
+      slPct:            1.5,
+      wm: { lookback: 25, v2TolerancePct: 2 },
+    },
+  },
 };
 
 function listPresets() {

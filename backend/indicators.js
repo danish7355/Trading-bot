@@ -416,6 +416,28 @@ function calculateAllIndicators(candles) {
   };
 }
 
+function calculateBollingerBands(closes, period = 20, stdDevMult = 2.0) {
+  const n = closes.length;
+  const upper = new Array(n).fill(null);
+  const middle = new Array(n).fill(null);
+  const lower = new Array(n).fill(null);
+
+  if (n < period) return { upper, middle, lower };
+
+  for (let i = period - 1; i < n; i++) {
+    const slice = closes.slice(i - period + 1, i + 1);
+    const mean = slice.reduce((sum, val) => sum + val, 0) / period;
+    const variance = slice.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / period;
+    const stdDev = Math.sqrt(variance);
+
+    middle[i] = mean;
+    upper[i] = mean + (stdDevMult * stdDev);
+    lower[i] = mean - (stdDevMult * stdDev);
+  }
+
+  return { upper, middle, lower };
+}
+
 module.exports = {
   calculateEMA,
   calculateRSI,
@@ -429,5 +451,6 @@ module.exports = {
   detectSupportResistance,
   detectRSIDivergence,
   detectCandlePattern,
-  calculateAllIndicators
+  calculateAllIndicators,
+  calculateBollingerBands
 };

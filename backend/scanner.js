@@ -1,10 +1,13 @@
-const binanceData    = require('./binanceData');
 const strategy       = require('./strategy');
 const strategyV2     = require('./strategy_v2');
+const strategyV3     = require('./strategy_v3');
 const tradeManager   = require('./tradeManager');
 
 function getActiveStrategyEngine() {
-  return (settingsRef.strategyEngine === 'v2' || settingsRef.activePreset === 'smc-structure') ? strategyV2 : strategy;
+  const engine = settingsRef.strategyEngine || (settingsRef.activePreset === 'smc-confluence' ? 'v3' : settingsRef.activePreset === 'smc-structure' ? 'v2' : 'v1');
+  if (engine === 'v3') return strategyV3;
+  if (engine === 'v2') return strategyV2;
+  return strategy;
 }
 const deltaExchange  = require('./deltaExchange');
 const telegram       = require('./telegramBot');
@@ -213,9 +216,10 @@ async function onCandleClose(symbol, closeTime) {
       );
     }
 
-    // Watchdog check for open trades (SMC / PA v2)
+    // Watchdog check for open trades (SMC / PA v2 / v3)
     openTrades.filter(t => t.symbol === symbol && t.status === 'OPEN').forEach(trade => {
-      const alert = strategyV2.watchdogCheck(trade, coinData[symbol].candles);
+      const activeEngine = getActiveStrategyEngine();
+      const alert = activeEngine.watchdogCheck ? activeEngine.watchdogCheck(trade, coinData[symbol].candles) : null;
       if (alert) {
         console.warn(`[WATCHDOG] ${alert.message}`);
         broadcastFn('WATCHDOG_ALERT', alert);
