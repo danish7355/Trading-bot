@@ -472,6 +472,9 @@ function createScannerRow(coin, rank) {
   const g9 = coin.gate9==='PASS' ? `<span class="gate-pass">✅</span>` : `<span class="gate-fail" title="${coin.gate9FailReason||''}">❌</span>`;
   const g10 = coin.gate10==='PASS' ? `<span class="gate-pass">✅</span>` : `<span class="gate-fail" title="${coin.gate10FailReason||''}">❌</span>`;
   const confBadge = `<span class="${coin.confirmationPassed?'green':'amber'}" title="${coin.confirmationCount||0}/3 confirmation gates">${coin.confirmationCount||0}/3</span>`;
+  const adxClass  = !coin.adx ? 'dim' : coin.adx >= 25 ? 'green' : coin.adx >= 20 ? 'amber' : 'red';
+  const rsiClass  = !coin.rsi ? 'dim' : (coin.rsi >= 70 || coin.rsi <= 30) ? 'green' : 'amber';
+  const volClass  = (coin.volumeRatio || 0) >= 1.5 ? 'green' : 'dim';
   const rowClass = [
     coin.isRanging ? 'row-ranging' : '',
     coin.openTrade ? 'row-trade-active' : '',
