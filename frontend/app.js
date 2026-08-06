@@ -989,7 +989,7 @@ function setupSettingsHandlers() {
           maxConcurrentTrades:parseInt(document.getElementById('set-maxtrades')?.value    || 3),
           dailyLossCapPct:    parseFloat(document.getElementById('set-dailylosscap')?.value || 5),
           weeklyLossCapPct:   parseFloat(document.getElementById('set-weeklylosscap')?.value || 10),
-          cooldownMinutes:    parseInt(document.getElementById('set-cooldown')?.value      || 30),
+
         },
         telegram: {
           botToken: document.getElementById('set-tgtoken')?.value,
@@ -1278,7 +1278,7 @@ function populateSettingsForm() {
     set('set-maxtrades',    appSettings.trade.maxConcurrentTrades);
     set('set-dailylosscap', appSettings.trade.dailyLossCapPct);
     set('set-weeklylosscap',appSettings.trade.weeklyLossCapPct);
-    set('set-cooldown',     appSettings.trade.cooldownMinutes);
+
   }
   if (appSettings.telegram) {
     set('set-tgtoken',  appSettings.telegram.botToken);
@@ -1431,10 +1431,10 @@ function handleGuardStateChanged(conditions) {
 
   inner.innerHTML = activeGuardConditions.map(c => {
     const cls = c.id === 'kill_switch_active' ? 'guard-badge-kill'
-              : c.id.includes('loss') || c.id.includes('cooldown') ? 'guard-badge-warn'
+              : c.id.includes('loss') ? 'guard-badge-warn'
               : 'guard-badge-info';
     const icon = c.id === 'kill_switch_active'    ? '🔴'
-               : c.id === 'cooldown_active'        ? `🟡 COOLDOWN: ${c.cooldownRemaining||0}m`
+
                : c.id === 'daily_loss_cap_hit'     ? '🟠'
                : c.id === 'websocket_disconnected' ? '📡'
                : c.id === 'stale_data_active'      ? '⏱'

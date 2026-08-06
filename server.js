@@ -676,7 +676,6 @@ app.get('/api/guard/status', async (req, res) => {
       killSwitchActive: tradingGuard.isKillSwitchActive(),
       activeConditions: active,
       blocked:          active.length > 0,
-      cooldownRemainingMs: tradingGuard.cooldownRemainingMs(),
     });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });

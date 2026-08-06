@@ -35,7 +35,7 @@ const CONDITION_LABELS = {
   kill_switch_active:      'Kill Switch Active',
   daily_loss_cap_hit:      'Daily Loss Cap Hit',
   weekly_loss_cap_hit:     'Weekly Loss Cap Hit',
-  cooldown_active:         'Cooldown Active',
+
   database_write_failed:   'DB Write Failed',
   exchange_unreachable:    'Exchange Unreachable',
 };
@@ -48,7 +48,7 @@ async function loadGuardState() {
     const saved = JSON.parse(raw);
     // Merge persisted fields into in-memory state
     guardState.killSwitchActive = saved.killSwitchActive ?? false;
-    guardState.lastCooldownTradeMs = saved.lastCooldownTradeMs || null;
+
     guardState.weeklyPnLStart     = saved.weeklyPnLStart     || null;
     guardState.weeklyPnLBaseline  = saved.weeklyPnLBaseline  || 0;
   } catch (e) {
@@ -60,7 +60,7 @@ async function saveGuardState() {
   try {
     const toSave = {
       killSwitchActive:     guardState.killSwitchActive,
-      lastCooldownTradeMs:  guardState.lastCooldownTradeMs || null,
+
       weeklyPnLStart:       guardState.weeklyPnLStart     || null,
       weeklyPnLBaseline:    guardState.weeklyPnLBaseline  || 0,
       savedAt:              new Date().toISOString(),
@@ -120,11 +120,8 @@ function notifyPriceTick(symbol) {
   guardState.lastPriceUpdateMs = Date.now();
 }
 
-// Called by finishCloseTrade in scanner when a loss trade closes
-function recordLossTrade() {
-  guardState.lastCooldownTradeMs = Date.now();
-  saveGuardState().catch(() => {});
-}
+// Cooldown removed — no-op
+function recordLossTrade() {}
 
 function recordWeeklyBaseline(balance) {
   const now  = new Date();
@@ -194,19 +191,11 @@ function checkWeeklyLossCap(balance) {
 }
 
 function checkCooldown() {
-  const cooldownMinutes = settingsRef.trade?.cooldownMinutes || settingsRef.cooldownMinutes || 30;
-  const lastLossMs      = guardState.lastCooldownTradeMs;
-  if (!lastLossMs) return false;
-  const elapsed = Date.now() - lastLossMs;
-  return elapsed < cooldownMinutes * 60 * 1000;
+  return false; // Cooldown disabled as requested
 }
 
 function cooldownRemainingMs() {
-  const cooldownMs = (settingsRef.trade?.cooldownMinutes || settingsRef.cooldownMinutes || 30) * 60 * 1000;
-  const lastLossMs = guardState.lastCooldownTradeMs;
-  if (!lastLossMs) return 0;
-  const remaining = cooldownMs - (Date.now() - lastLossMs);
-  return remaining > 0 ? remaining : 0;
+  return 0;
 }
 
 function checkDbWriteFailed() {
@@ -240,7 +229,6 @@ function checkAllConditions(context = {}) {
     { id: 'exchange_unreachable',    active: checkExchangeUnreachable() },
     { id: 'daily_loss_cap_hit',      active: checkDailyLossCap(dailyPnL, balance) },
     { id: 'weekly_loss_cap_hit',     active: checkWeeklyLossCap(balance) },
-    { id: 'cooldown_active',         active: checkCooldown() },
     { id: 'reconciliation_required', active: checkReconciliationRequired() },
   ];
 
@@ -271,10 +259,7 @@ function buildReason(conditionId) {
     case 'exchange_unreachable':   return 'Exchange API health check failed';
     case 'daily_loss_cap_hit':     return `Daily loss cap hit (${settingsRef.trade?.dailyLossLimitPct || 5}%)`;
     case 'weekly_loss_cap_hit':    return `Weekly loss cap hit (${settingsRef.weeklyLossCapPct || 10}%)`;
-    case 'cooldown_active': {
-      const rem = Math.ceil(cooldownRemainingMs() / 60000);
-      return `Cooldown active — ${rem}m remaining after last loss trade`;
-    }
+
     case 'reconciliation_required': return 'Position reconciliation required — manual review needed';
     default:                        return conditionId;
   }
@@ -323,7 +308,7 @@ function getActiveConditions(context = {}) {
     { id: 'exchange_unreachable',    active: checkExchangeUnreachable() },
     { id: 'daily_loss_cap_hit',      active: checkDailyLossCap(dailyPnL, balance) },
     { id: 'weekly_loss_cap_hit',     active: checkWeeklyLossCap(balance) },
-    { id: 'cooldown_active',         active: checkCooldown() },
+
     { id: 'reconciliation_required', active: checkReconciliationRequired() },
   ];
   return checks
@@ -332,7 +317,7 @@ function getActiveConditions(context = {}) {
       id:    c.id,
       label: CONDITION_LABELS[c.id] || c.id,
       reason: buildReason(c.id),
-      cooldownRemaining: c.id === 'cooldown_active' ? Math.ceil(cooldownRemainingMs() / 60000) : null,
+
     }));
 }
 
@@ -353,7 +338,7 @@ module.exports = {
   notifyDbWriteStatus,
   notifyExchangeStatus,
   notifyPriceTick,
-  recordLossTrade,
+
   recordWeeklyBaseline,
   activateKillSwitch,
   deactivateKillSwitch,
@@ -363,5 +348,5 @@ module.exports = {
   getActiveConditions,
   setReconciliationRequired,
   loadGuardLog,
-  cooldownRemainingMs,
+
 };

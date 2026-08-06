@@ -1,3 +1,4 @@
+const binanceData    = require('./binanceData');
 const strategy       = require('./strategy');
 const strategyV2     = require('./strategy_v2');
 const strategyV3     = require('./strategy_v3');
@@ -528,10 +529,8 @@ async function finishCloseTrade(trade, exitPrice, outcome) {
     }
   }
 
-  // Notify guard of loss trade for cooldown tracking
-  if (trade.realizedPnL < 0) {
-    tradingGuard.recordLossTrade();
-  }
+
+
   // Update guard's weekly baseline
   const finalBalance = await storage.getDemoBalance();
   tradingGuard.recordWeeklyBaseline(finalBalance);
