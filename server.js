@@ -498,6 +498,15 @@ app.get('/api/funding', async (req, res) => {
   }
 });
 
+app.get('/api/settings', async (req, res) => {
+  try {
+    const settings = await storage.loadSettings();
+    res.json({ success: true, settings });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 app.post('/api/settings', async (req, res) => {
   try {
     const updated = await applySettingsUpdate(req.body);

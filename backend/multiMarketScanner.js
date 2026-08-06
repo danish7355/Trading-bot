@@ -121,7 +121,7 @@ async function scanMarket(marketId) {
             symbol, candles, cfg.defaultSettings, state.openTrades, state.settings?.autoTradePaused || false
           );
           if (evalResult) {
-            if (evalResult.action === '4GATE_TRADE') {
+            if (evalResult.action === '10GATE_TRADE' || evalResult.action === 'WM_TRADE') {
               await handleMarketTrade(marketId, symbol, evalResult, candles);
             }
             // Log gate evaluation

@@ -1,6 +1,11 @@
 const binanceData    = require('./binanceData');
 const strategy       = require('./strategy');
+const strategyV2     = require('./strategy_v2');
 const tradeManager   = require('./tradeManager');
+
+function getActiveStrategyEngine() {
+  return (settingsRef.strategyEngine === 'v2' || settingsRef.activePreset === 'smc-structure') ? strategyV2 : strategy;
+}
 const deltaExchange  = require('./deltaExchange');
 const telegram       = require('./telegramBot');
 const storage        = require('./storage');
@@ -102,6 +107,17 @@ function recalculateScannerState() {
     const g2 = strategy.checkGate2(volumes, settingsRef);
     const g3 = strategy.checkGate3(highs, lows, closes, adxObj, settingsRef);
     const g4 = strategy.checkGate4(indicators.calculateRSI(closes, 14), settingsRef);
+    const dir = g1.pass ? g1.direction : (ema9Val > ema55Val ? 'LONG' : 'SHORT');
+    const macdRes = indicators.calculateMACD(closes);
+    const atrVal = indicators.calculateATR(highs, lows, closes, 14);
+    const g5 = strategy.checkGate5_Liquidity(volumes, closes, settingsRef);
+    const g6 = strategy.checkGate6_Spread(livePrice, settingsRef);
+    const g7 = strategy.checkGate7_Volatility(highs, lows, closes, settingsRef);
+    const g8 = strategy.checkGate8_Momentum(macdRes, dir);
+    const g9 = strategy.checkGate9_Structure(stDir, dir);
+    const g10 = strategy.checkGate10_RiskReward(livePrice, atrVal, dir, settingsRef);
+    const gates = { g1, g2, g3, g4, g5, g6, g7, g8, g9, g10 };
+    Object.assign(gates, strategy.evaluateGateSystem(gates));
 
     const isRanging  = !g3.pass;
     const wmStateObj = strategy.getWMState(symbol);
@@ -109,21 +125,20 @@ function recalculateScannerState() {
     if (wmStateObj.state === 'READY')   statusBadges.push('W_READY');
     else if (wmStateObj.state === 'FORMING') statusBadges.push('W_FORMING');
     if (isRanging) statusBadges.push('RANGING');
-    if (g1.pass && g2.pass && g3.pass && g4.pass) statusBadges.push('ALL_GATES_PASS');
+    if (gates.mandatoryPassed && gates.confirmationPassed) statusBadges.push('ALL_GATES_PASS');
 
     const indObj = {
       currentPrice: livePrice, ema9: ema9Val, ema55: ema55Val, ema200: ema200Val,
       rsi: rsiVal, adx: adxObj.adx, pdi: adxObj.pdi, mdi: adxObj.mdi,
       volumeRatio: volRatio, supertrendDirection: stDir
     };
-    const dir      = g1.pass ? g1.direction : (ema9Val > ema55Val ? 'LONG' : 'SHORT');
     const scoreObj = strategy.calculateScore(indObj, dir, wmStateObj.state, settingsRef);
 
     coinsArr.push({
       symbol, price: livePrice, change24h,
       score: scoreObj.total, scoreDisplay: scoreObj.scoreDisplay,
       direction: dir,
-      status: g1.pass && g2.pass && g3.pass && g4.pass ? 'READY' : 'WATCHING',
+      status: gates.mandatoryPassed && gates.confirmationPassed ? 'READY' : 'WATCHING',
       statusBadges,
       ema9: ema9Val, ema55: ema55Val, ema200: ema200Val,
       emaRelationship: ema9Val > ema55Val ? 'ABOVE' : 'BELOW',
@@ -133,6 +148,15 @@ function recalculateScannerState() {
       gate2: g2.pass ? 'PASS' : 'FAIL', gate2Value: g2.ratio,       gate2FailReason: g2.reason,
       gate3: g3.pass ? 'PASS' : 'FAIL', gate3ADX: adxObj.adx,       gate3FailReason: g3.reason,
       gate4: g4.pass ? 'PASS' : 'FAIL', gate4RSI: rsiVal,           gate4FailReason: g4.reason,
+      gate5: g5.pass ? 'PASS' : 'FAIL', gate5FailReason: g5.reason,
+      gate6: g6.pass ? 'PASS' : 'FAIL', gate6FailReason: g6.reason,
+      gate7: g7.pass ? 'PASS' : 'FAIL', gate7FailReason: g7.reason,
+      gate8: g8.pass ? 'PASS' : 'FAIL', gate8FailReason: g8.reason,
+      gate9: g9.pass ? 'PASS' : 'FAIL', gate9FailReason: g9.reason,
+      gate10: g10.pass ? 'PASS' : 'FAIL', gate10FailReason: g10.reason,
+      mandatoryPassed: gates.mandatoryPassed,
+      confirmationPassed: gates.confirmationPassed,
+      confirmationCount: gates.confirmationCount,
       wmState: wmStateObj.state, wmType: wmStateObj.type,
       wmV1: wmStateObj.v1Price, wmNeckline: wmStateObj.necklinePrice, wmV2: wmStateObj.v2Price,
       isRanging, sessionBadge: getSessionBadge()
@@ -189,7 +213,16 @@ async function onCandleClose(symbol, closeTime) {
       );
     }
 
-    const result = await strategy.evaluateCoin(
+    // Watchdog check for open trades (SMC / PA v2)
+    openTrades.filter(t => t.symbol === symbol && t.status === 'OPEN').forEach(trade => {
+      const alert = strategyV2.watchdogCheck(trade, coinData[symbol].candles);
+      if (alert) {
+        console.warn(`[WATCHDOG] ${alert.message}`);
+        broadcastFn('WATCHDOG_ALERT', alert);
+      }
+    });
+
+    const result = await getActiveStrategyEngine().evaluateCoin(
       symbol, coinData[symbol].candles, settingsRef, openTrades, autoTradePaused
     );
     if (!result) return;
@@ -200,7 +233,7 @@ async function onCandleClose(symbol, closeTime) {
     broadcastFn('GATE_LOG', gateLog.slice(-50));
 
     if (result.action === 'WM_TRADE')   await handleWMTrade(symbol, result);
-    else if (result.action === '4GATE_TRADE') await handle4GateTrade(symbol, result);
+    else if (result.action === '10GATE_TRADE') await handle10GateTrade(symbol, result);
     else if (result.action === 'GATE_FAIL') {
       if (result.signal) await storage.addSignal(result.signal);
       if (result.isRanging) {
@@ -213,7 +246,7 @@ async function onCandleClose(symbol, closeTime) {
   }
 }
 
-async function handle4GateTrade(symbol, result) {
+async function handle10GateTrade(symbol, result) {
   const signal = result.signal;
   await storage.addSignal(signal);
   broadcastFn('SIGNAL_DETECTED', signal);
@@ -544,13 +577,13 @@ async function runFullAutoScan() {
           }
 
           if (coinData[symbol]?.candles?.length >= 50) {
-            const evalResult = await strategy.evaluateCoin(
+            const evalResult = await getActiveStrategyEngine().evaluateCoin(
               symbol, coinData[symbol].candles, settingsRef, openTrades, autoTradePaused
             );
             if (evalResult) {
               logGateEvaluation(symbol, evalResult, Date.now());
               if (evalResult.action === 'WM_TRADE')        await handleWMTrade(symbol, evalResult);
-              else if (evalResult.action === '4GATE_TRADE') await handle4GateTrade(symbol, evalResult);
+              else if (evalResult.action === '10GATE_TRADE') await handle10GateTrade(symbol, evalResult);
               else if (evalResult.action === 'GATE_FAIL') {
                 if (evalResult.signal) await storage.addSignal(evalResult.signal);
                 if (evalResult.isRanging) {

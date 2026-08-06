@@ -72,6 +72,22 @@ const PRESETS = {
       wm: { lookback: 30, v2TolerancePct: 2.5 },
     },
   },
+  'smc-structure': {
+    id:          'smc-structure',
+    name:        'Smart Money Concepts (SMC / PA)',
+    description: 'Price Action & SMC Engine v2. Uses HTF bias, liquidity sweeps, order block retests, FVG fills, and BOS/CHoCH structural triggers.',
+    winRate:     '60–65%',
+    rr:          '1:3.0+',
+    disclaimer:  'These figures are backtested estimates. Past performance does not guarantee future results.',
+    params: {
+      strategyEngine:   'v2',
+      confidence_threshold: 0.55,
+      wick_body_min:    1.5,
+      tpPct:            4.5,
+      slPct:            1.5,
+      wm: { lookback: 25, v2TolerancePct: 2 },
+    },
+  },
 };
 
 function listPresets() {

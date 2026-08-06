@@ -397,7 +397,7 @@ function handleScannerUpdate(data) {
     if (wmCell) wmCell.innerHTML = renderWMBadge(coin.wmState, coin.wmType);
     const statusCell = row.querySelector('.status-cell');
     if (statusCell) statusCell.innerHTML = renderStatusBadges(coin);
-    const allPass = coin.gate1 === 'PASS' && coin.gate2 === 'PASS' && coin.gate3 === 'PASS' && coin.gate4 === 'PASS';
+    const allPass = coin.mandatoryPassed && coin.confirmationPassed;
     row.className = [coin.isRanging ? 'row-ranging' : '', coin.openTrade ? 'row-trade-active' : '',
       allPass ? 'row-all-gates' : '', coin.wmState === 'READY' ? 'row-wm-ready' : ''].filter(Boolean).join(' ');
   });
@@ -408,7 +408,13 @@ function updateGateCells(row, coin) {
     { pass: coin.gate1 === 'PASS', value: coin.gate1Direction || '',          reason: coin.gate1FailReason },
     { pass: coin.gate2 === 'PASS', value: (coin.gate2Value?.toFixed(1)||'—')+'×', reason: coin.gate2FailReason },
     { pass: coin.gate3 === 'PASS', value: coin.gate3ADX?.toFixed(0) || 'N/A',  reason: coin.gate3FailReason },
-    { pass: coin.gate4 === 'PASS', value: coin.gate4RSI?.toFixed(1) || 'N/A',  reason: coin.gate4FailReason }
+    { pass: coin.gate4 === 'PASS', value: coin.gate4RSI?.toFixed(1) || 'N/A',  reason: coin.gate4FailReason },
+    { pass: coin.gate5 === 'PASS', value: 'LIQ',   reason: coin.gate5FailReason },
+    { pass: coin.gate6 === 'PASS', value: 'SPR',   reason: coin.gate6FailReason },
+    { pass: coin.gate7 === 'PASS', value: 'VOL%',  reason: coin.gate7FailReason },
+    { pass: coin.gate8 === 'PASS', value: 'MACD',  reason: coin.gate8FailReason },
+    { pass: coin.gate9 === 'PASS', value: 'ST',    reason: coin.gate9FailReason },
+    { pass: coin.gate10 === 'PASS', value: 'R:R',  reason: coin.gate10FailReason },
   ];
   row.querySelectorAll('[data-gate]').forEach((cell, i) => {
     const g = gateData[i];
@@ -481,13 +487,17 @@ function createScannerRow(coin, rank) {
   const g4 = coin.gate4 === 'PASS'
     ? `<span class="gate-pass">✅ ${coin.gate4RSI?.toFixed(1)||''}</span>`
     : `<span class="gate-fail" title="${coin.gate4FailReason||''}">❌ ${coin.gate4RSI?.toFixed(1)||'N/A'}</span>`;
-  const adxClass = !coin.adx ? 'dim' : coin.adx >= 25 ? 'green' : coin.adx >= 20 ? 'amber' : 'red';
-  const rsiClass = coin.rsi >= 30 && coin.rsi <= 65 ? 'green' : coin.rsi > 65 && coin.rsi <= 75 ? 'amber' : 'red';
-  const volClass = coin.volumeRatio >= 1.5 ? 'green' : coin.volumeRatio >= 1.0 ? 'amber' : 'red';
+  const g5 = coin.gate5==='PASS' ? `<span class="gate-pass">✅</span>` : `<span class="gate-fail" title="${coin.gate5FailReason||''}">❌</span>`;
+  const g6 = coin.gate6==='PASS' ? `<span class="gate-pass">✅</span>` : `<span class="gate-fail" title="${coin.gate6FailReason||''}">❌</span>`;
+  const g7 = coin.gate7==='PASS' ? `<span class="gate-pass">✅</span>` : `<span class="gate-fail" title="${coin.gate7FailReason||''}">❌</span>`;
+  const g8 = coin.gate8==='PASS' ? `<span class="gate-pass">✅</span>` : `<span class="gate-fail" title="${coin.gate8FailReason||''}">❌</span>`;
+  const g9 = coin.gate9==='PASS' ? `<span class="gate-pass">✅</span>` : `<span class="gate-fail" title="${coin.gate9FailReason||''}">❌</span>`;
+  const g10 = coin.gate10==='PASS' ? `<span class="gate-pass">✅</span>` : `<span class="gate-fail" title="${coin.gate10FailReason||''}">❌</span>`;
+  const confBadge = `<span class="${coin.confirmationPassed?'green':'amber'}" title="${coin.confirmationCount||0}/3 confirmation gates">${coin.confirmationCount||0}/3</span>`;
   const rowClass = [
     coin.isRanging ? 'row-ranging' : '',
     coin.openTrade ? 'row-trade-active' : '',
-    (coin.gate1 === 'PASS' && coin.gate2 === 'PASS' && coin.gate3 === 'PASS' && coin.gate4 === 'PASS') ? 'row-all-gates' : '',
+    (coin.mandatoryPassed && coin.confirmationPassed) ? 'row-all-gates' : '',
     coin.wmState === 'READY' ? 'row-wm-ready' : ''
   ].filter(Boolean).join(' ');
   const displayPrice = currentPrices[coin.symbol] || coin.price || 0;
@@ -512,6 +522,13 @@ function createScannerRow(coin, rank) {
     <td data-gate="2">${g2}</td>
     <td data-gate="3">${g3}</td>
     <td data-gate="4">${g4}</td>
+    <td data-gate="5">${g5}</td>
+    <td data-gate="6">${g6}</td>
+    <td data-gate="7">${g7}</td>
+    <td data-gate="8" title="Confirmation">${g8}</td>
+    <td data-gate="9" title="Confirmation">${g9}</td>
+    <td data-gate="10" title="Confirmation">${g10}</td>
+    <td>${confBadge}</td>
     <td class="wm-cell">${renderWMBadge(coin.wmState,coin.wmType)}</td>
     <td><button onclick="openChartOverlay('${coin.symbol}')" class="chart-btn">📊</button></td>
   </tr>`;
@@ -640,7 +657,7 @@ async function loadTradeLog() {
       const pnlStr  = t.status === 'OPEN' ? '<span class="dim">Open</span>' : `<span class="${pnlClass}">${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}</span>`;
       const pctStr  = t.status === 'OPEN' ? '—' : `<span class="${pnlClass}">${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%</span>`;
       const sc      = t.strategyConditions || {};
-      const gates   = `<span class="${sc.gate1==='PASS'?'green':'red'}">G1</span> <span class="${sc.gate2==='PASS'?'green':'red'}">G2</span> <span class="${sc.gate3==='PASS'?'green':'red'}">G3</span> <span class="${sc.gate4==='PASS'?'green':'red'}">G4</span>`;
+      const gates   = `<span class="${sc.gate1==='PASS'?'green':'red'}">G1</span> <span class="${sc.gate2==='PASS'?'green':'red'}">G2</span> <span class="${sc.gate3==='PASS'?'green':'red'}">G3</span> <span class="${sc.gate4==='PASS'?'green':'red'}">G4</span> <span class="${sc.gate5==='PASS'?'green':'red'}">G5</span> <span class="${sc.gate6==='PASS'?'green':'red'}">G6</span> <span class="${sc.gate7==='PASS'?'green':'red'}">G7</span> | <span class="${sc.gate8==='PASS'?'green':'red'}">G8</span> <span class="${sc.gate9==='PASS'?'green':'red'}">G9</span> <span class="${sc.gate10==='PASS'?'green':'red'}">G10</span>`;
       const dir     = t.direction === 'LONG'
         ? '<span class="dir-long">▲ LONG</span>' : '<span class="dir-short">▼ SHORT</span>';
       const statusBadge = t.status === 'OPEN'
@@ -738,7 +755,7 @@ async function loadSignals() {
     // Apply result filter client-side for finer control
     if (res === 'FIRED')   sigs = sigs.filter(s => s.tradeFired);
     else if (res === 'SKIPPED') sigs = sigs.filter(s => !s.tradeFired && s.gate1 !== 'FAIL' && s.gate2 !== 'FAIL');
-    else if (res === 'FAILED')  sigs = sigs.filter(s => s.gate1 === 'FAIL' || s.gate2 === 'FAIL' || s.gate3 === 'FAIL' || s.gate4 === 'FAIL');
+    else if (res === 'FAILED')  sigs = sigs.filter(s => s.gate1 === 'FAIL' || s.gate2 === 'FAIL' || s.gate3 === 'FAIL' || s.gate4 === 'FAIL' || s.gate5 === 'FAIL' || s.gate6 === 'FAIL' || s.gate7 === 'FAIL');
     populateSignalTable(sigs);
   } catch (e) { console.warn('[loadSignals]', e.message); }
 }
@@ -981,6 +998,7 @@ function setupSettingsHandlers() {
       const payload = {
         autoTradeEnabled: document.getElementById('set-autotrade')?.checked,
         timeframe: document.getElementById('set-timeframe')?.value,
+        strategyEngine: document.getElementById('set-strategyengine')?.value || 'v1',
         scanCoins: parseInt(document.getElementById('set-scancoins')?.value || 50),
         scanIntervalMinutes: parseInt(document.getElementById('set-scaninterval')?.value || 5),
         exchange:  document.getElementById('set-exchange')?.value,
@@ -1269,6 +1287,7 @@ function populateSettingsForm() {
   const set = (id, val) => { const el = document.getElementById(id); if (el && val !== undefined && val !== null) { if (el.type === 'checkbox') el.checked = val; else el.value = val; } };
   set('set-autotrade', appSettings.autoTradeEnabled);
   set('set-timeframe',    appSettings.timeframe);
+  set('set-strategyengine', appSettings.strategyEngine || (appSettings.activePreset === 'smc-structure' ? 'v2' : 'v1'));
   set('set-scancoins',    appSettings.scanCoins);
   set('set-scaninterval', appSettings.scanIntervalMinutes);
   set('set-exchange',     appSettings.exchange);
@@ -1291,6 +1310,31 @@ function populateSettingsForm() {
   document.querySelectorAll('.preset-card').forEach(c => {
     c.classList.toggle('preset-active', c.dataset.presetId === appSettings.activePreset);
   });
+}
+
+async function changeStrategyEngine(strategyEngine) {
+  try {
+    const res = await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ strategyEngine }),
+    });
+    if (!res.ok) {
+      throw new Error(`Server returned HTTP ${res.status}`);
+    }
+    const contentType = res.headers.get('content-type');
+    if (!contentType || !contentType.includes('application/json')) {
+      const text = await res.text();
+      throw new Error(`Non-JSON response from server: ${text.slice(0, 50)}...`);
+    }
+    const data = await res.json();
+    if (data.success) {
+      showToast(`🧠 Strategy Engine switched to: ${strategyEngine === 'v2' ? 'Price Action / SMC (v2)' : '10-Gate EMA + ADX (v1)'}`, 'success', 5000);
+    }
+  } catch (e) {
+    console.error('[STRATEGY ENGINE SWITCH ERROR]', e.message);
+    showToast(`❌ Failed to switch strategy engine: ${e.message}`, 'error', 5000);
+  }
 }
 
 window.toggleRanging = function() {
@@ -1582,13 +1626,21 @@ async function applyPreset(presetId) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ presetId }),
     });
+    if (!res.ok) throw new Error(`Server returned HTTP ${res.status}`);
+    const contentType = res.headers.get('content-type');
+    if (!contentType || !contentType.includes('application/json')) {
+      const text = await res.text();
+      throw new Error(`Non-JSON response: ${text.slice(0, 50)}...`);
+    }
     const data = await res.json();
     if (data.success) {
       showToast(`✅ Strategy preset "${presetId}" applied — parameters updated`, 'success', 6000);
       // Refresh form with new params
       const settingsRes = await fetch('/api/settings');
-      const settingsData = await settingsRes.json();
-      if (settingsData.settings) { appSettings = settingsData.settings; populateSettingsForm(); }
+      if (settingsRes.ok && settingsRes.headers.get('content-type')?.includes('application/json')) {
+        const settingsData = await settingsRes.json();
+        if (settingsData.settings) { appSettings = settingsData.settings; populateSettingsForm(); }
+      }
       await loadStrategyPresets();
     } else {
       showToast('Error: ' + data.error, 'error');

@@ -371,7 +371,9 @@ function recalculateTPAfterPartial(trade, currentPrice, atr) {
 
 async function sendExitTelegram(trade, exitPrice, decision, pnl, isPartial) {
   const holdDuration = formatHoldDuration(trade.openedAt);
-  const pnlStr       = `${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)} (${((pnl / trade.positionValue) * 100).toFixed(1)}%)`;
+  const effectiveValue = trade.positionValue * (trade.remainingPct || 1.0);
+  const pnlPct       = effectiveValue > 0 ? ((pnl / effectiveValue) * 100).toFixed(1) : '0.0';
+  const pnlStr       = `${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)} (${pnlPct}%)`;
   const triggers     = decision.reason || 'unknown';
 
   if (isPartial) {

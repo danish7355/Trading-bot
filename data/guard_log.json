@@ -1,5 +1,213 @@
 [
   {
+    "timestamp": "2026-08-06T13:29:25.742Z",
+    "condition": "cooldown_active",
+    "reason": "Cooldown active — 9m remaining after last loss trade",
+    "attemptedSymbol": "SKYAIUSDT",
+    "attemptedDir": "LONG",
+    "score": 57
+  },
+  {
+    "timestamp": "2026-08-06T13:28:40.920Z",
+    "condition": "cooldown_active",
+    "reason": "Cooldown active — 9m remaining after last loss trade",
+    "attemptedSymbol": "SKYAIUSDT",
+    "attemptedDir": "LONG",
+    "score": 57
+  },
+  {
+    "timestamp": "2026-08-06T13:25:56.888Z",
+    "condition": "cooldown_active",
+    "reason": "Cooldown active — 12m remaining after last loss trade",
+    "attemptedSymbol": "SKYAIUSDT",
+    "attemptedDir": "LONG",
+    "score": 57
+  },
+  {
+    "timestamp": "2026-08-06T13:20:59.734Z",
+    "condition": "cooldown_active",
+    "reason": "Cooldown active — 17m remaining after last loss trade",
+    "attemptedSymbol": "SKYAIUSDT",
+    "attemptedDir": "LONG",
+    "score": 57
+  },
+  {
+    "timestamp": "2026-08-06T13:17:46.757Z",
+    "condition": "cooldown_active",
+    "reason": "Cooldown active — 20m remaining after last loss trade",
+    "attemptedSymbol": "SKYAIUSDT",
+    "attemptedDir": "LONG",
+    "score": 57
+  },
+  {
+    "timestamp": "2026-08-06T13:17:35.725Z",
+    "condition": "cooldown_active",
+    "reason": "Cooldown active — 21m remaining after last loss trade",
+    "attemptedSymbol": "SKYAIUSDT",
+    "attemptedDir": "LONG",
+    "score": 57
+  },
+  {
+    "timestamp": "2026-08-06T13:12:35.497Z",
+    "condition": "cooldown_active",
+    "reason": "Cooldown active — 26m remaining after last loss trade",
+    "attemptedSymbol": "SKYAIUSDT",
+    "attemptedDir": "LONG",
+    "score": 57
+  },
+  {
+    "timestamp": "2026-08-06T05:12:53.871Z",
+    "condition": "websocket_disconnected",
+    "reason": "WebSocket is disconnected — price feed unreliable",
+    "attemptedSymbol": "XRPUSDT",
+    "attemptedDir": "SHORT",
+    "score": 57
+  },
+  {
+    "timestamp": "2026-08-06T05:12:53.228Z",
+    "condition": "websocket_disconnected",
+    "reason": "WebSocket is disconnected — price feed unreliable",
+    "attemptedSymbol": "HEIUSDT",
+    "attemptedDir": "LONG",
+    "score": 57
+  },
+  {
+    "timestamp": "2026-08-05T22:10:53.635Z",
+    "condition": "websocket_disconnected",
+    "reason": "WebSocket is disconnected — price feed unreliable",
+    "attemptedSymbol": "HEIUSDT",
+    "attemptedDir": "LONG",
+    "score": 57
+  },
+  {
+    "timestamp": "2026-08-05T20:20:49.433Z",
+    "condition": "cooldown_active",
+    "reason": "Cooldown active — 25m remaining after last loss trade",
+    "attemptedSymbol": "HEIUSDT",
+    "attemptedDir": "LONG",
+    "score": 57
+  },
+  {
+    "timestamp": "2026-08-05T20:19:51.167Z",
+    "condition": "cooldown_active",
+    "reason": "Cooldown active — 26m remaining after last loss trade",
+    "attemptedSymbol": "HEIUSDT",
+    "attemptedDir": "LONG",
+    "score": 57
+  },
+  {
+    "timestamp": "2026-08-05T20:09:53.355Z",
+    "condition": "cooldown_active",
+    "reason": "Cooldown active — 2m remaining after last loss trade",
+    "attemptedSymbol": "RATSUSDT",
+    "attemptedDir": "SHORT",
+    "score": 55
+  },
+  {
+    "timestamp": "2026-08-05T20:09:51.445Z",
+    "condition": "cooldown_active",
+    "reason": "Cooldown active — 2m remaining after last loss trade",
+    "attemptedSymbol": "HEIUSDT",
+    "attemptedDir": "LONG",
+    "score": 57
+  },
+  {
+    "timestamp": "2026-08-05T20:09:51.260Z",
+    "condition": "cooldown_active",
+    "reason": "Cooldown active — 2m remaining after last loss trade",
+    "attemptedSymbol": "BLESSUSDT",
+    "attemptedDir": "LONG",
+    "score": 57
+  },
+  {
+    "timestamp": "2026-08-05T20:04:53.102Z",
+    "condition": "cooldown_active",
+    "reason": "Cooldown active — 7m remaining after last loss trade",
+    "attemptedSymbol": "RATSUSDT",
+    "attemptedDir": "SHORT",
+    "score": 55
+  },
+  {
+    "timestamp": "2026-08-05T20:04:51.277Z",
+    "condition": "cooldown_active",
+    "reason": "Cooldown active — 7m remaining after last loss trade",
+    "attemptedSymbol": "BLESSUSDT",
+    "attemptedDir": "LONG",
+    "score": 57
+  },
+  {
+    "timestamp": "2026-08-05T20:04:51.184Z",
+    "condition": "cooldown_active",
+    "reason": "Cooldown active — 7m remaining after last loss trade",
+    "attemptedSymbol": "HEIUSDT",
+    "attemptedDir": "LONG",
+    "score": 57
+  },
+  {
+    "timestamp": "2026-08-05T19:59:51.297Z",
+    "condition": "cooldown_active",
+    "reason": "Cooldown active — 12m remaining after last loss trade",
+    "attemptedSymbol": "BLESSUSDT",
+    "attemptedDir": "LONG",
+    "score": 57
+  },
+  {
+    "timestamp": "2026-08-05T19:59:51.154Z",
+    "condition": "cooldown_active",
+    "reason": "Cooldown active — 12m remaining after last loss trade",
+    "attemptedSymbol": "HEIUSDT",
+    "attemptedDir": "LONG",
+    "score": 57
+  },
+  {
+    "timestamp": "2026-08-05T19:54:51.332Z",
+    "condition": "cooldown_active",
+    "reason": "Cooldown active — 17m remaining after last loss trade",
+    "attemptedSymbol": "HEIUSDT",
+    "attemptedDir": "LONG",
+    "score": 57
+  },
+  {
+    "timestamp": "2026-08-05T19:52:02.935Z",
+    "condition": "cooldown_active",
+    "reason": "Cooldown active — 20m remaining after last loss trade",
+    "attemptedSymbol": "HEIUSDT",
+    "attemptedDir": "LONG",
+    "score": 57
+  },
+  {
+    "timestamp": "2026-08-05T19:49:51.110Z",
+    "condition": "cooldown_active",
+    "reason": "Cooldown active — 22m remaining after last loss trade",
+    "attemptedSymbol": "HEIUSDT",
+    "attemptedDir": "LONG",
+    "score": 57
+  },
+  {
+    "timestamp": "2026-08-05T19:44:53.930Z",
+    "condition": "cooldown_active",
+    "reason": "Cooldown active — 27m remaining after last loss trade",
+    "attemptedSymbol": "HEIUSDT",
+    "attemptedDir": "LONG",
+    "score": 57
+  },
+  {
+    "timestamp": "2026-08-05T19:43:19.696Z",
+    "condition": "cooldown_active",
+    "reason": "Cooldown active — 28m remaining after last loss trade",
+    "attemptedSymbol": "HEIUSDT",
+    "attemptedDir": "LONG",
+    "score": 57
+  },
+  {
+    "timestamp": "2026-08-05T19:41:53.120Z",
+    "condition": "cooldown_active",
+    "reason": "Cooldown active — 30m remaining after last loss trade",
+    "attemptedSymbol": "HEIUSDT",
+    "attemptedDir": "LONG",
+    "score": 57
+  },
+  {
     "timestamp": "2026-07-30T08:09:23.457Z",
     "condition": "stale_data_active",
     "reason": "Last price update was 617s ago (>60s threshold)",

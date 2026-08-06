@@ -299,6 +299,85 @@ function checkGate4(rsiArray, settings) {
   return { pass: true, rsi: currentRSI };
 }
 
+// ── NEW GATES (G5–G10) ───────────────────────────────────────────
+
+function checkGate5_Liquidity(volumes, closes, settings) {
+  // 24h USDT volume must exceed minimum threshold
+  const i = volumes.length - 1;
+  if (i < 0) return { pass: false, reason: 'No volume data' };
+  const usdtVol = volumes[i] * (closes[i] || 0);
+  const minVol = settings.liquidity?.minUsdtVolume24h || 5_000_000;
+  if (usdtVol < minVol) {
+    return { pass: false, reason: `24h vol $${(usdtVol/1e6).toFixed(1)}M < $${(minVol/1e6).toFixed(0)}M`, usdtVol };
+  }
+  return { pass: true, usdtVol };
+}
+
+function checkGate6_Spread(currentPrice, settings) {
+  // Bid-ask spread check — uses a conservative estimate if real spread unavailable
+  // In live mode this would use order book data; for now estimate from price granularity
+  const spreadPct = settings.spread?.estimatedPct || 0.05;
+  const maxSpread = settings.spread?.maxPct || 0.10;
+  if (spreadPct > maxSpread) {
+    return { pass: false, reason: `Spread ${spreadPct.toFixed(2)}% > ${maxSpread}%`, spreadPct };
+  }
+  return { pass: true, spreadPct };
+}
+
+function checkGate7_Volatility(highs, lows, closes, settings) {
+  // ATR as % of price must be in a sweet spot — not dead, not wild
+  if (closes.length < 15) return { pass: false, reason: 'Insufficient data for ATR%' };
+  const i = closes.length - 1;
+  // Simple ATR(14) as percentage of current price
+  let trSum = 0;
+  for (let j = Math.max(1, i - 13); j <= i; j++) {
+    const tr = Math.max(highs[j] - lows[j], Math.abs(highs[j] - closes[j-1]), Math.abs(lows[j] - closes[j-1]));
+    trSum += tr;
+  }
+  const atrVal = trSum / Math.min(14, i);
+  const atrPct = (atrVal / closes[i]) * 100;
+  const minATR = settings.volatility?.minAtrPct || 0.5;
+  const maxATR = settings.volatility?.maxAtrPct || 8.0;
+  if (atrPct < minATR) return { pass: false, reason: `ATR% ${atrPct.toFixed(2)}% < ${minATR}% (dead)`, atrPct };
+  if (atrPct > maxATR) return { pass: false, reason: `ATR% ${atrPct.toFixed(2)}% > ${maxATR}% (wild)`, atrPct };
+  return { pass: true, atrPct };
+}
+
+function checkGate8_Momentum(macdResult, direction) {
+  // MACD histogram expanding in signal direction
+  const i = macdResult.histogram.length - 1;
+  if (i < 1 || macdResult.histogram[i] === null || macdResult.histogram[i-1] === null) {
+    return { pass: false, reason: 'Insufficient MACD data' };
+  }
+  const hist = macdResult.histogram[i];
+  const prevHist = macdResult.histogram[i-1];
+  const directionMatch = (direction === 'LONG' && hist > 0) || (direction === 'SHORT' && hist < 0);
+  const expanding = Math.abs(hist) > Math.abs(prevHist);
+  if (directionMatch && expanding) return { pass: true, histogram: hist };
+  if (directionMatch) return { pass: false, reason: `MACD aligned but contracting`, histogram: hist };
+  return { pass: false, reason: `MACD ${hist > 0 ? 'bullish' : 'bearish'} vs ${direction}`, histogram: hist };
+}
+
+function checkGate9_Structure(stDirection, direction) {
+  // SuperTrend direction must match signal direction
+  const match = (direction === 'LONG' && stDirection === 'up') ||
+                (direction === 'SHORT' && stDirection === 'down');
+  if (match) return { pass: true, stDirection };
+  return { pass: false, reason: `SuperTrend ${stDirection} vs signal ${direction}`, stDirection };
+}
+
+function checkGate10_RiskReward(entryPrice, atr, direction, settings) {
+  // R:R ratio must meet minimum threshold
+  if (!atr || atr <= 0) return { pass: false, reason: 'No ATR for R:R calc' };
+  const slDist = atr * 1.5; // matches tradeManager SL distance
+  const tp1Mult = settings.trade?.tp1AtrMultiple || 2.0;
+  const tpDist = atr * tp1Mult;
+  const rr = tpDist / slDist;
+  const minRR = settings.riskReward?.minRatio || 1.5;
+  if (rr < minRR) return { pass: false, reason: `R:R ${rr.toFixed(2)} < ${minRR}`, rr };
+  return { pass: true, rr };
+}
+
 function calculateScore(ind, direction, wmState, settings) {
   let score = 0;
   const breakdown = {};
@@ -410,7 +489,7 @@ function calculateScore(ind, direction, wmState, settings) {
 
 function buildSignalObject(symbol, direction, candles, ema9, ema55, ema200,
                            rsiArr, adxResult, volumeRatio, scoreObj, trigger,
-                           gate1, gate2, gate3, gate4, wmResult) {
+                           gates, wmResult) {
   const i = candles.length - 1;
   const now = Date.now();
 
@@ -437,16 +516,20 @@ function buildSignalObject(symbol, direction, candles, ema9, ema55, ema200,
     volumeRatio,
     scoreAtSignal: scoreObj?.total ?? 0,
     scoreBreakdown: scoreObj?.breakdown ?? {},
-    gate1: gate1?.pass ? 'PASS' : 'FAIL',
-    gate1Reason: gate1?.reason || null,
-    gate1Direction: gate1?.direction || null,
-    gate2: gate2?.pass ? 'PASS' : 'FAIL',
-    gate2Reason: gate2?.reason || null,
-    gate2Value: gate2?.ratio || null,
-    gate3: gate3?.pass ? 'PASS' : 'FAIL',
-    gate3Reason: gate3?.reason || null,
-    gate4: gate4?.pass ? 'PASS' : 'FAIL',
-    gate4Reason: gate4?.reason || null,
+    // 10 gates
+    gate1: gates.g1?.pass ? 'PASS' : 'FAIL', gate1Reason: gates.g1?.reason || null, gate1Direction: gates.g1?.direction || null,
+    gate2: gates.g2?.pass ? 'PASS' : 'FAIL', gate2Reason: gates.g2?.reason || null, gate2Value: gates.g2?.ratio || null,
+    gate3: gates.g3?.pass ? 'PASS' : 'FAIL', gate3Reason: gates.g3?.reason || null,
+    gate4: gates.g4?.pass ? 'PASS' : 'FAIL', gate4Reason: gates.g4?.reason || null,
+    gate5: gates.g5?.pass ? 'PASS' : 'FAIL', gate5Reason: gates.g5?.reason || null,
+    gate6: gates.g6?.pass ? 'PASS' : 'FAIL', gate6Reason: gates.g6?.reason || null,
+    gate7: gates.g7?.pass ? 'PASS' : 'FAIL', gate7Reason: gates.g7?.reason || null,
+    gate8: gates.g8?.pass ? 'PASS' : 'FAIL', gate8Reason: gates.g8?.reason || null,
+    gate9: gates.g9?.pass ? 'PASS' : 'FAIL', gate9Reason: gates.g9?.reason || null,
+    gate10: gates.g10?.pass ? 'PASS' : 'FAIL', gate10Reason: gates.g10?.reason || null,
+    mandatoryPassed: gates.mandatoryPassed,
+    confirmationPassed: gates.confirmationPassed,
+    confirmationCount: gates.confirmationCount,
     wmPattern: wmResult ? wmResult.type : null,
     wmState: wmResult ? wmResult.state : null,
     wmV1: wmResult?.v1Price || null,
@@ -500,19 +583,17 @@ async function evaluateCoin(symbol, candles, settings, openTrades = [], autoTrad
   const currentVWAP = vwap[vwap.length - 1];
   const vwapDeviation = currentVWAP ? (Math.abs(currentPrice - currentVWAP) / currentVWAP) * 100 : 0;
 
+  // BUG 3 FIX: MACD direction is computed AFTER we know direction (deferred below)
   const indObj = {
     currentPrice,
-    ema9: ema9[i],
-    ema55: ema55[i],
-    ema200: ema200[i],
+    ema9: ema9[i], ema55: ema55[i], ema200: ema200[i],
     rsi: currentRSI,
-    adx: adxResult.adx,
-    pdi: adxResult.pdi,
-    mdi: adxResult.mdi,
-    macdCrossedInDirection: macdResult.histogram[i] !== null && macdResult.histogram[i] > 0,
+    adx: adxResult.adx, pdi: adxResult.pdi, mdi: adxResult.mdi,
+    macdCrossedInDirection: false, // set after direction known
     macdHistExpanding: macdResult.histogram[i] !== null && macdResult.histogram[i - 1] !== null &&
                        Math.abs(macdResult.histogram[i]) > Math.abs(macdResult.histogram[i - 1]),
-    macdZeroLineConfirms: macdResult.macdLine[i] !== null && macdResult.macdLine[i] > 0,
+    macdHistPositiveDirection: false, // set after direction known
+    macdZeroLineConfirms: false, // set after direction known
     supertrendDirection: st.directions[i],
     volumeRatio: currentVolRatio,
     vwapDeviation,
@@ -522,27 +603,53 @@ async function evaluateCoin(symbol, candles, settings, openTrades = [], autoTrad
     nearFibLevel: Object.values(fib).some(f => typeof f === 'number' && Math.abs(f - currentPrice) / currentPrice <= 0.01)
   };
 
-  const wmResult = updateWMDetection(symbol, ema9, ema55, settings);
-
-  // W/M CONFIRMED -> Fire trade immediately
-  if (wmResult.confirmed) {
-    const wmDir = wmResult.type === 'W' ? 'LONG' : 'SHORT';
-    const gate1Result = checkGate1(ema9, ema55, closes, candles, settings);
-    const gate2Result = checkGate2(volumes, settings);
-    const gate3Result = checkGate3(highs, lows, closes, adxResult, settings);
-    const gate4Result = checkGate4(rsiArr, settings);
-    const score = calculateScore(indObj, wmDir, 'CONFIRMED', settings);
-
-    const signal = buildSignalObject(
-      symbol, wmDir, candles, ema9, ema55, ema200,
-      rsiArr, adxResult, currentVolRatio, score, 'WM_FORMATION',
-      gate1Result, gate2Result, gate3Result, gate4Result, wmResult
-    );
-
-    return { action: 'WM_TRADE', signal, wmResult, score, atr, fib, indicators: indObj };
+  // Helper: set MACD direction-aware fields
+  function setMACDDirection(dir) {
+    const hist = macdResult.histogram[i];
+    const ml = macdResult.macdLine[i];
+    if (dir === 'LONG') {
+      indObj.macdCrossedInDirection = hist !== null && hist > 0;
+      indObj.macdHistPositiveDirection = hist !== null && hist > 0;
+      indObj.macdZeroLineConfirms = ml !== null && ml > 0;
+    } else {
+      indObj.macdCrossedInDirection = hist !== null && hist < 0;
+      indObj.macdHistPositiveDirection = hist !== null && hist < 0;
+      indObj.macdZeroLineConfirms = ml !== null && ml < 0;
+    }
   }
 
-  // 4-GATE SYSTEM
+  const wmResult = updateWMDetection(symbol, ema9, ema55, settings);
+
+  // ── W/M CONFIRMED — BUG 2 FIX: apply same guards as 4GATE_TRADE ──
+  if (wmResult.confirmed) {
+    const wmDir = wmResult.type === 'W' ? 'LONG' : 'SHORT';
+    setMACDDirection(wmDir);
+    const score = calculateScore(indObj, wmDir, 'CONFIRMED', settings);
+    const g1 = checkGate1(ema9, ema55, closes, candles, settings);
+    const g2 = checkGate2(volumes, settings);
+    const g3 = checkGate3(highs, lows, closes, adxResult, settings);
+    const g4 = checkGate4(rsiArr, settings);
+    const gates = { g1, g2, g3, g4,
+      g5: checkGate5_Liquidity(volumes, closes, settings),
+      g6: checkGate6_Spread(currentPrice, settings),
+      g7: checkGate7_Volatility(highs, lows, closes, settings),
+      g8: checkGate8_Momentum(macdResult, wmDir),
+      g9: checkGate9_Structure(st.directions[i], wmDir),
+      g10: checkGate10_RiskReward(currentPrice, atr, wmDir, settings),
+    };
+    Object.assign(gates, evaluateGateSystem(gates));
+    const signal = buildSignalObject(symbol, wmDir, candles, ema9, ema55, ema200,
+      rsiArr, adxResult, currentVolRatio, score, 'WM_FORMATION', gates, wmResult);
+
+    // BUG 2 FIX: same safety guards as 4GATE_TRADE
+    if (hasOpenTrade(symbol, openTrades)) return { action: 'BLOCKED', reason: 'Trade already open', score };
+    if (maxTradesReached(openTrades, settings)) return { action: 'BLOCKED', reason: 'Max trades reached', score };
+    if (autoTradePaused) return { action: 'BLOCKED', reason: 'Auto-trading paused', score };
+
+    return { action: 'WM_TRADE', signal, wmResult, score, atr, fib, indicators: indObj, gates };
+  }
+
+  // ── 10-GATE SYSTEM ──────────────────────────────────────────────
   const g1 = checkGate1(ema9, ema55, closes, candles, settings);
   if (!g1.pass) {
     const score = calculateScore(indObj, 'LONG', getWMState(symbol).state, settings);
@@ -550,52 +657,73 @@ async function evaluateCoin(symbol, candles, settings, openTrades = [], autoTrad
   }
 
   const direction = g1.direction;
-  const g2 = checkGate2(volumes, settings);
-  if (!g2.pass) {
-    const score = calculateScore(indObj, direction, getWMState(symbol).state, settings);
-    const signal = buildSignalObject(symbol, direction, candles, ema9, ema55, ema200, rsiArr, adxResult, currentVolRatio, score, '4-GATE', g1, g2, null, null, null);
-    return { action: 'GATE_FAIL', failedGate: 2, reason: g2.reason, signal, score };
-  }
+  setMACDDirection(direction);
 
-  const g3 = checkGate3(highs, lows, closes, adxResult, settings);
-  if (!g3.pass) {
-    const score = calculateScore(indObj, direction, getWMState(symbol).state, settings);
-    const signal = buildSignalObject(symbol, direction, candles, ema9, ema55, ema200, rsiArr, adxResult, currentVolRatio, score, '4-GATE', g1, g2, g3, null, null);
-    return { action: 'GATE_FAIL', failedGate: 3, reason: g3.reason, signal, score, isRanging: true };
-  }
+  const g2  = checkGate2(volumes, settings);
+  const g3  = checkGate3(highs, lows, closes, adxResult, settings);
+  const g4  = checkGate4(rsiArr, settings);
+  const g5  = checkGate5_Liquidity(volumes, closes, settings);
+  const g6  = checkGate6_Spread(currentPrice, settings);
+  const g7  = checkGate7_Volatility(highs, lows, closes, settings);
+  const g8  = checkGate8_Momentum(macdResult, direction);
+  const g9  = checkGate9_Structure(st.directions[i], direction);
+  const g10 = checkGate10_RiskReward(currentPrice, atr, direction, settings);
 
-  const g4 = checkGate4(rsiArr, settings);
+  const gates = { g1, g2, g3, g4, g5, g6, g7, g8, g9, g10 };
+  Object.assign(gates, evaluateGateSystem(gates));
+
   const score = calculateScore(indObj, direction, getWMState(symbol).state, settings);
 
-  if (!g4.pass) {
-    const signal = buildSignalObject(symbol, direction, candles, ema9, ema55, ema200, rsiArr, adxResult, currentVolRatio, score, '4-GATE', g1, g2, g3, g4, null);
-    return { action: 'GATE_FAIL', failedGate: 4, reason: g4.reason, signal, score };
+  // Any mandatory gate failed?
+  if (!gates.mandatoryPassed) {
+    const firstFail = [g1,g2,g3,g4,g5,g6,g7].findIndex(g => !g.pass) + 1;
+    const failedGate = [g1,g2,g3,g4,g5,g6,g7][firstFail - 1];
+    const signal = buildSignalObject(symbol, direction, candles, ema9, ema55, ema200,
+      rsiArr, adxResult, currentVolRatio, score, '10-GATE', gates, null);
+    return {
+      action: 'GATE_FAIL', failedGate: firstFail, reason: failedGate.reason,
+      signal, score, isRanging: firstFail === 3 && !g3.pass,
+      gates
+    };
   }
 
-  // ALL 4 GATES PASSED
-  if (hasOpenTrade(symbol, openTrades)) {
-    return { action: 'BLOCKED', reason: 'Trade already open on this coin', score };
-  }
-  if (maxTradesReached(openTrades, settings)) {
-    return { action: 'BLOCKED', reason: 'Max concurrent trades reached', score };
-  }
-  if (autoTradePaused) {
-    return { action: 'BLOCKED', reason: 'Auto-trading paused (daily limit)', score };
+  // Confirmation gates: need 2 of 3
+  if (!gates.confirmationPassed) {
+    const signal = buildSignalObject(symbol, direction, candles, ema9, ema55, ema200,
+      rsiArr, adxResult, currentVolRatio, score, '10-GATE', gates, null);
+    return {
+      action: 'GATE_FAIL', failedGate: 'CONFIRMATION',
+      reason: `Only ${gates.confirmationCount}/3 confirmation gates passed (need 2)`,
+      signal, score, gates
+    };
   }
 
-  const signal = buildSignalObject(symbol, direction, candles, ema9, ema55, ema200, rsiArr, adxResult, currentVolRatio, score, '4-GATE', g1, g2, g3, g4, null);
-  return { action: '4GATE_TRADE', signal, direction, score, atr, fib, indicators: indObj, gate1: g1, gate2: g2, gate3: g3, gate4: g4 };
+  // ALL 10 GATES PASSED
+  if (hasOpenTrade(symbol, openTrades)) return { action: 'BLOCKED', reason: 'Trade already open on this coin', score };
+  if (maxTradesReached(openTrades, settings)) return { action: 'BLOCKED', reason: 'Max concurrent trades reached', score };
+  if (autoTradePaused) return { action: 'BLOCKED', reason: 'Auto-trading paused (daily limit)', score };
+
+  const signal = buildSignalObject(symbol, direction, candles, ema9, ema55, ema200,
+    rsiArr, adxResult, currentVolRatio, score, '10-GATE', gates, null);
+  return { action: '10GATE_TRADE', signal, direction, score, atr, fib, indicators: indObj, gates };
+}
+
+// ── Gate System Evaluator ─────────────────────────────────────────
+function evaluateGateSystem(gates) {
+  // G1-G7: mandatory (all must pass)
+  const mandatoryPassed = [gates.g1, gates.g2, gates.g3, gates.g4, gates.g5, gates.g6, gates.g7]
+    .every(g => g.pass);
+  // G8-G10: confirmation (2 of 3 must pass)
+  const confirmationCount = [gates.g8, gates.g9, gates.g10].filter(g => g.pass).length;
+  const confirmationPassed = confirmationCount >= 2;
+  return { mandatoryPassed, confirmationPassed, confirmationCount };
 }
 
 module.exports = {
-  checkGate1,
-  checkGate2,
-  checkGate3,
-  checkGate4,
-  calculateScore,
-  updateWMDetection,
-  resetWMState,
-  getWMState,
-  evaluateCoin,
-  buildSignalObject
+  checkGate1, checkGate2, checkGate3, checkGate4,
+  checkGate5_Liquidity, checkGate6_Spread, checkGate7_Volatility,
+  checkGate8_Momentum, checkGate9_Structure, checkGate10_RiskReward,
+  calculateScore, evaluateGateSystem,
+  updateWMDetection, resetWMState, getWMState,
+  evaluateCoin, buildSignalObject
 };

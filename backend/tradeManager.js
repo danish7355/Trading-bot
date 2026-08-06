@@ -17,16 +17,17 @@ function createTrade(signal, entryPrice, atr = 100, fib = {}, settings = {}) {
   let tp3 = 0;
 
   if (direction === 'LONG') {
-    sl = entryPrice - (atr * 1.5);
-    tp1 = entryPrice + (atr * tp1Mult);
-    tp2 = entryPrice + (atr * tp2Mult);
-    tp3 = fib?.ext1618 || (entryPrice + (atr * 5.0));
+    sl  = signal.sl  || (entryPrice - (atr * 1.5));
+    tp1 = signal.tp1 || (entryPrice + (atr * tp1Mult));
+    tp2 = signal.tp2 || (entryPrice + (atr * tp2Mult));
+    tp3 = signal.tp3 || fib?.ext1618 || (entryPrice + (atr * 5.0));
   } else {
-    sl = entryPrice + (atr * 1.5);
-    tp1 = entryPrice - (atr * tp1Mult);
-    tp2 = entryPrice - (atr * tp2Mult);
+    sl  = signal.sl  || (entryPrice + (atr * 1.5));
+    tp1 = signal.tp1 || (entryPrice - (atr * tp1Mult));
+    tp2 = signal.tp2 || (entryPrice - (atr * tp2Mult));
     const lowLevel = fib?.level1000 || (entryPrice - (atr * 2.0));
-    tp3 = entryPrice - Math.abs(entryPrice - lowLevel) * 1.618;
+    const swingRange = Math.abs(entryPrice - lowLevel);
+    tp3 = signal.tp3 || (swingRange > atr * 0.5 ? entryPrice - swingRange * 1.618 : entryPrice - (atr * 5.0));
   }
 
   // Risk cap

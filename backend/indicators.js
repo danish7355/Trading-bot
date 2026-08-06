@@ -40,7 +40,7 @@ function calculateRSI(closes, period = 14) {
   let avgLoss = losses / period;
 
   if (avgLoss === 0) {
-    result[period] = 100;
+    result[period] = avgGain === 0 ? 50 : 100;
   } else {
     const rs = avgGain / avgLoss;
     result[period] = 100 - (100 / (1 + rs));
@@ -55,7 +55,7 @@ function calculateRSI(closes, period = 14) {
     avgLoss = ((avgLoss * (period - 1)) + loss) / period;
 
     if (avgLoss === 0) {
-      result[i] = 100;
+      result[i] = avgGain === 0 ? 50 : 100;
     } else {
       const rs = avgGain / avgLoss;
       result[i] = 100 - (100 / (1 + rs));
@@ -195,12 +195,20 @@ function calculateSuperTrend(highs, lows, closes, atrPeriod = 10, mult = 3.0) {
 
   if (n < atrPeriod + 1) return { values, directions };
 
+  // Compute full ATR array once (Wilder's smoothing preserved)
+  const trArray = [0];
+  for (let i = 1; i < n; i++) {
+    const hl = highs[i] - lows[i];
+    const hc = Math.abs(highs[i] - closes[i - 1]);
+    const lc = Math.abs(lows[i] - closes[i - 1]);
+    trArray.push(Math.max(hl, hc, lc));
+  }
   const atrArray = new Array(n).fill(null);
-  for (let i = atrPeriod; i < n; i++) {
-    const subH = highs.slice(i - atrPeriod, i + 1);
-    const subL = lows.slice(i - atrPeriod, i + 1);
-    const subC = closes.slice(i - atrPeriod, i + 1);
-    atrArray[i] = calculateATR(subH, subL, subC, atrPeriod) || 0;
+  let atrSum = 0;
+  for (let i = 1; i <= atrPeriod; i++) atrSum += trArray[i];
+  atrArray[atrPeriod] = atrSum / atrPeriod;
+  for (let i = atrPeriod + 1; i < n; i++) {
+    atrArray[i] = (atrArray[i - 1] * (atrPeriod - 1) + trArray[i]) / atrPeriod;
   }
 
   const upperBand = new Array(n).fill(0);

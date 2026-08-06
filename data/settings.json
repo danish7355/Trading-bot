@@ -53,16 +53,14 @@
     "trailingStopAtr": 1,
     "trailingActivatesAt": "tp1",
     "timeExitCandles": 3,
-    "timeExitScoreThreshold": 40
+    "timeExitScoreThreshold": 40,
+    "dailyLossCapPct": 5,
+    "weeklyLossCapPct": 10,
+    "cooldownMinutes": 0
   },
   "wm": {
-    "enabled": true,
     "lookback": 25,
-    "v2TolerancePct": 2,
-    "p2TolerancePct": 2,
-    "autoExecute": true,
-    "countdownSeconds": 10,
-    "soundAlert": true
+    "v2TolerancePct": 2
   },
   "demoBalance": 10000,
   "telegram": {
@@ -87,5 +85,19 @@
       "volatilitySpike": true,
       "wmForming": false
     }
-  }
+  },
+  "strategyEngine": "v2",
+  "confidence_threshold": 0.55,
+  "wick_body_min": 1.5,
+  "tpPct": 4.5,
+  "slPct": 1.5,
+  "activePreset": "smc-structure",
+  "scanIntervalMinutes": 5,
+  "ema9Period": 9,
+  "ema55Period": 55,
+  "ema200Period": 200,
+  "adxThreshold": 25,
+  "rsiOverbought": 70,
+  "rsiOversold": 30,
+  "volumeThreshold": 1.5
 }

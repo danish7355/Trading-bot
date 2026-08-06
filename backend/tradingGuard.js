@@ -194,7 +194,7 @@ function checkWeeklyLossCap(balance) {
 }
 
 function checkCooldown() {
-  const cooldownMinutes = settingsRef.cooldownMinutes || 30;
+  const cooldownMinutes = settingsRef.trade?.cooldownMinutes || settingsRef.cooldownMinutes || 30;
   const lastLossMs      = guardState.lastCooldownTradeMs;
   if (!lastLossMs) return false;
   const elapsed = Date.now() - lastLossMs;
@@ -202,7 +202,7 @@ function checkCooldown() {
 }
 
 function cooldownRemainingMs() {
-  const cooldownMs = (settingsRef.cooldownMinutes || 30) * 60 * 1000;
+  const cooldownMs = (settingsRef.trade?.cooldownMinutes || settingsRef.cooldownMinutes || 30) * 60 * 1000;
   const lastLossMs = guardState.lastCooldownTradeMs;
   if (!lastLossMs) return 0;
   const remaining = cooldownMs - (Date.now() - lastLossMs);

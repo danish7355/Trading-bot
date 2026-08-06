@@ -1,7 +1,7 @@
 {
   "killSwitchActive": false,
-  "lastCooldownTradeMs": null,
-  "weeklyPnLStart": "2026-07-26",
-  "weeklyPnLBaseline": 10000,
-  "savedAt": "2026-07-30T06:15:37.165Z"
+  "lastCooldownTradeMs": 1786021658321,
+  "weeklyPnLStart": "2026-08-01",
+  "weeklyPnLBaseline": 9982.352662908503,
+  "savedAt": "2026-08-06T13:07:38.321Z"
 }
