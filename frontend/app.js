@@ -167,7 +167,8 @@ function initializeFromState(state) {
   }
 
   if (state.signals) populateSignalTable(state.signals);
-  if (state.dailyPnL) { dailyRealizedPnL = state.dailyPnL.realizedPnL || 0; updateTopBarTotalPnL(); }
+  if (state.dailyPnL) { dailyRealizedPnL = state.dailyPnL.realizedPnL || 0; }
+  updateTopBarTotalPnL();
   if (state.systemStatus) handleSystemStatus(state.systemStatus);
   if (state.settings?.timeframe) setActiveTimeframe(state.settings.timeframe);
 
@@ -347,13 +348,16 @@ function handlePriceFeedChanged(data) {
 }
 
 function recalculateTradePnL(trade, currentPrice) {
+  if (!currentPrice || isNaN(currentPrice) || !trade.entryPrice) return;
   let rawPnL = 0;
   if (trade.direction === 'LONG') rawPnL = ((currentPrice - trade.entryPrice) / trade.entryPrice) * trade.positionValue * trade.leverage;
   else rawPnL = ((trade.entryPrice - currentPrice) / trade.entryPrice) * trade.positionValue * trade.leverage;
   const unrealizedPnL = rawPnL * (trade.remainingPct || 1.0);
   const pnlPct        = (unrealizedPnL / trade.positionValue) * 100;
   trade._unrealizedPnL = unrealizedPnL;
+  trade.unrealizedPnL  = unrealizedPnL;
   trade._currentPrice  = currentPrice;
+  trade.currentPrice   = currentPrice;
 
   const pnlEl = document.getElementById('pnl-' + trade.id);
   if (pnlEl) {
@@ -367,7 +371,7 @@ function recalculateTradePnL(trade, currentPrice) {
 }
 
 function updateTopBarTotalPnL() {
-  const totalUnrealized = openTradesLocal.reduce((s, t) => s + (t._unrealizedPnL || 0), 0);
+  const totalUnrealized = openTradesLocal.reduce((s, t) => s + (t._unrealizedPnL ?? t.unrealizedPnL ?? 0), 0);
   const total = dailyRealizedPnL + totalUnrealized;
   const el    = document.getElementById('pnl-today');
   if (el) {
@@ -527,10 +531,15 @@ function handleTradeUpdate(update) {
   const trade   = openTradesLocal.find(t => t.id === tradeId);
   if (trade) {
     Object.assign(trade, update);
-    if (update.currentPrice) recalculateTradePnL(trade, update.currentPrice);
+    if (update.unrealizedPnL !== undefined) {
+      trade._unrealizedPnL = update.unrealizedPnL;
+    }
+    const livePrice = update.currentPrice || currentPrices[trade.symbol] || trade.currentPrice || trade.entryPrice;
+    recalculateTradePnL(trade, livePrice);
     const trailingEl = document.getElementById('trailing-' + trade.id);
     if (trailingEl && update.trailingActive)
       trailingEl.textContent = '🔒 Active at $' + formatPrice(update.trailingStop);
+    updateTopBarTotalPnL();
   }
 }
 
@@ -562,8 +571,24 @@ function addTradeCardToDOM(trade) {
   if (existing) existing.remove();
   grid.insertAdjacentHTML('afterbegin', createTradeCard(trade));
   if (!openTradesLocal.some(t => t.id === trade.id)) openTradesLocal.push(trade);
-  recalculateTradePnL(trade, currentPrices[trade.symbol] || trade.entryPrice);
+  if (trade.unrealizedPnL !== undefined && trade._unrealizedPnL === undefined) {
+    trade._unrealizedPnL = trade.unrealizedPnL;
+  }
+  const livePrice = currentPrices[trade.symbol] || trade.currentPrice || trade.entryPrice;
+  recalculateTradePnL(trade, livePrice);
+  updateTopBarTotalPnL();
 }
+
+// Periodic 1-second auto-refresh for live PnL calculations across all active positions
+setInterval(() => {
+  if (openTradesLocal && openTradesLocal.length > 0) {
+    openTradesLocal.forEach(trade => {
+      const livePrice = currentPrices[trade.symbol] || trade.currentPrice || trade.entryPrice;
+      recalculateTradePnL(trade, livePrice);
+    });
+    updateTopBarTotalPnL();
+  }
+}, 1000);
 
 function createTradeCard(trade) {
   const dirClass = trade.direction === 'LONG' ? 'dir-long' : 'dir-short';

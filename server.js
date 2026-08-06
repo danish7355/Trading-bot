@@ -173,7 +173,10 @@ async function applySettingsUpdate(newSettings) {
     console.log(`[SETTINGS] Re-loading data — TF:${updated.timeframe}, Coins:${numCoins}`);
     console.log(`[SETTINGS] Calling startPriceStream from settings handler`);
     const coinList = await binanceData.getTopCoins(numCoins);
-    websocketManager.startPriceStream(coinList, (symbol, price) => scanner.onPriceTick(symbol, price));
+    const openTradesForStream = scanner.getOpenTrades() || [];
+    const openSymbolsForStream = openTradesForStream.map(t => t.symbol);
+    const fullPriceList = Array.from(new Set([...coinList, ...openSymbolsForStream]));
+    websocketManager.startPriceStream(fullPriceList, (symbol, price) => scanner.onPriceTick(symbol, price));
     console.log(`[SETTINGS] startPriceStream returned from settings handler`);
     websocketManager.restartKlineStream(coinList, updated.timeframe || '4h', (sym, closeTime) => {
       scanner.onCandleClose(sym, closeTime);
@@ -871,10 +874,12 @@ async function main() {
       tradingGuard.notifyPriceTick(symbol);
     });
     
-    console.log(`[SERVER] About to call startPriceStream with ${coinList.length} symbols`);
-    console.log(`[SERVER] startPriceStream function type:`, typeof websocketManager.startPriceStream);
+    const openTradesForStream = scanner.getOpenTrades() || [];
+    const openSymbolsForStream = openTradesForStream.map(t => t.symbol);
+    const fullPriceList = Array.from(new Set([...coinList, ...openSymbolsForStream]));
+    console.log(`[SERVER] About to call startPriceStream with ${fullPriceList.length} symbols (including ${openSymbolsForStream.length} open trade symbol(s))`);
     
-    websocketManager.startPriceStream(coinList);
+    websocketManager.startPriceStream(fullPriceList, (symbol, price) => scanner.onPriceTick(symbol, price));
     console.log(`[SERVER] startPriceStream returned`);
     
     websocketManager.startKlineStream(coinList, settings.timeframe || '4h', (sym, closeTime) => {
