@@ -416,13 +416,11 @@ function renderScannerTable() {
   tbody.innerHTML = '';
   const filtered = applyScannerFilters(scannerCoins);
   const sorted   = sortCoins(filtered, sortColumn, sortDirection);
-  const active   = sorted.filter(c => !c.isRanging);
-  const ranging  = sorted.filter(c =>  c.isRanging);
-  active.forEach((coin, idx) => tbody.insertAdjacentHTML('beforeend', createScannerRow(coin, idx + 1)));
+  sorted.forEach((coin, idx) => tbody.insertAdjacentHTML('beforeend', createScannerRow(coin, idx + 1)));
+
   const rangingCount = document.getElementById('ranging-count');
-  if (rangingCount) rangingCount.textContent = ranging.length;
-  const rangingTbody = document.getElementById('ranging-tbody');
-  if (rangingTbody) rangingTbody.innerHTML = ranging.map((c,i) => createScannerRow(c, i+1)).join('');
+  const rangingCoins = scannerCoins.filter(c => c.isRanging);
+  if (rangingCount) rangingCount.textContent = rangingCoins.length;
 }
 
 function applyScannerFilters(coins) {
