@@ -465,6 +465,138 @@ function getEquityCurveFromTrades(closed = [], startBalance = 10000) {
   });
 }
 
+function getSummaryFromTrades(closed = [], demoBalance = 10000) {
+  if (!closed || closed.length === 0) return getEmptySummary();
+
+  const wins = closed.filter(t => (t.realizedPnL ?? t.pnl ?? 0) > 0);
+  const losses = closed.filter(t => (t.realizedPnL ?? t.pnl ?? 0) <= 0);
+  const totalPnL = closed.reduce((sum, t) => sum + (t.realizedPnL ?? t.pnl ?? 0), 0);
+  const winPnL = wins.reduce((sum, t) => sum + (t.realizedPnL ?? t.pnl ?? 0), 0);
+  const lossPnL = Math.abs(losses.reduce((sum, t) => sum + (t.realizedPnL ?? t.pnl ?? 0), 0));
+
+  const profitFactor = lossPnL > 0 ? +(winPnL / lossPnL).toFixed(2) : (winPnL > 0 ? 99.99 : 0);
+
+  const avgWin = wins.length > 0 ? winPnL / wins.length : 0;
+  const avgLoss = losses.length > 0 ? lossPnL / losses.length : 0;
+  const avgRR = avgLoss > 0 ? +(avgWin / avgLoss).toFixed(2) : 0;
+
+  const maxDrawdown = calculateMaxDrawdown(closed);
+  const sharpe = calculateSharpeRatio(closed);
+  const avgDuration = calculateAvgDuration(closed);
+
+  const winRate = closed.length > 0 ? wins.length / closed.length : 0;
+  const lossRate = 1 - winRate;
+  const expectancy = (winRate * avgWin) - (lossRate * avgLoss);
+
+  const pnls = closed.map(t => t.realizedPnL ?? t.pnl ?? 0);
+
+  return {
+    totalTrades: closed.length,
+    wins: wins.length,
+    losses: losses.length,
+    winRate: +(winRate * 100).toFixed(1),
+    totalPnL: +totalPnL.toFixed(2),
+    avgWin: +avgWin.toFixed(2),
+    avgLoss: +avgLoss.toFixed(2),
+    profitFactor,
+    avgRR,
+    maxDrawdown: +maxDrawdown.toFixed(2),
+    sharpeRatio: +sharpe.toFixed(2),
+    avgTradeDuration: avgDuration,
+    expectancy: +expectancy.toFixed(2),
+    bestTrade: pnls.length > 0 ? +Math.max(...pnls).toFixed(2) : 0,
+    worstTrade: pnls.length > 0 ? +Math.min(...pnls).toFixed(2) : 0
+  };
+}
+
+function getByDirectionFromTrades(closed = []) {
+  const result = { LONG: { trades: 0, wins: 0, totalPnL: 0 }, SHORT: { trades: 0, wins: 0, totalPnL: 0 } };
+  for (const trade of closed) {
+    const dir = trade.direction || trade.side || 'LONG';
+    if (!result[dir]) result[dir] = { trades: 0, wins: 0, totalPnL: 0 };
+    result[dir].trades++;
+    const pnl = trade.realizedPnL ?? trade.pnl ?? 0;
+    result[dir].totalPnL += pnl;
+    if (pnl > 0) result[dir].wins++;
+  }
+  for (const dir of Object.keys(result)) {
+    result[dir].winRate = result[dir].trades > 0 ? +((result[dir].wins / result[dir].trades) * 100).toFixed(1) : 0;
+    result[dir].avgPnL = result[dir].trades > 0 ? +(result[dir].totalPnL / result[dir].trades).toFixed(2) : 0;
+    result[dir].totalPnL = +result[dir].totalPnL.toFixed(2);
+  }
+  return result;
+}
+
+function getByStrategyFromTrades(closed = []) {
+  const grouped = {};
+  for (const trade of closed) {
+    const tag = trade.trigger || trade.strategy_tag || '10GATE_TRADE';
+    if (!grouped[tag]) grouped[tag] = { trades: 0, wins: 0, totalPnL: 0 };
+    grouped[tag].trades++;
+    const pnl = trade.realizedPnL ?? trade.pnl ?? 0;
+    grouped[tag].totalPnL += pnl;
+    if (pnl > 0) grouped[tag].wins++;
+  }
+  const result = {};
+  for (const [tag, data] of Object.entries(grouped)) {
+    result[tag] = {
+      trades: data.trades,
+      wins: data.wins,
+      losses: data.trades - data.wins,
+      winRate: data.trades > 0 ? +((data.wins / data.trades) * 100).toFixed(1) : 0,
+      totalPnL: +data.totalPnL.toFixed(2),
+      avgPnL: data.trades > 0 ? +(data.totalPnL / data.trades).toFixed(2) : 0
+    };
+  }
+  return result;
+}
+
+function getBySymbolFromTrades(closed = [], limit = 10) {
+  const grouped = {};
+  for (const trade of closed) {
+    const sym = trade.symbol;
+    if (!grouped[sym]) grouped[sym] = { trades: 0, wins: 0, totalPnL: 0 };
+    grouped[sym].trades++;
+    const pnl = trade.realizedPnL ?? trade.pnl ?? 0;
+    grouped[sym].totalPnL += pnl;
+    if (pnl > 0) grouped[sym].wins++;
+  }
+  const symbols = Object.entries(grouped).map(([symbol, data]) => ({
+    symbol,
+    trades: data.trades,
+    wins: data.wins,
+    winRate: data.trades > 0 ? +((data.wins / data.trades) * 100).toFixed(1) : 0,
+    totalPnL: +data.totalPnL.toFixed(2)
+  }));
+  symbols.sort((a, b) => b.totalPnL - a.totalPnL);
+  return {
+    top: symbols.slice(0, limit),
+    bottom: symbols.slice(-limit).reverse()
+  };
+}
+
+function getStreakAnalysisFromTrades(closed = []) {
+  let maxWin = 0, maxLoss = 0, current = 0;
+  let isWinning = null;
+  for (const t of closed) {
+    const pnl = t.realizedPnL ?? t.pnl ?? 0;
+    const win = pnl > 0;
+    if (win === isWinning) {
+      current++;
+    } else {
+      current = 1;
+      isWinning = win;
+    }
+    if (win && current > maxWin) maxWin = current;
+    if (!win && current > maxLoss) maxLoss = current;
+  }
+  return {
+    currentStreak: current * (isWinning ? 1 : -1),
+    maxWinStreak: maxWin,
+    maxLossStreak: maxLoss
+  };
+}
+
 module.exports = {
   getSummary,
   getEquityCurve,
@@ -476,4 +608,9 @@ module.exports = {
   getStreakAnalysis,
   getInsightsFromTrades,
   getEquityCurveFromTrades,
+  getSummaryFromTrades,
+  getByDirectionFromTrades,
+  getByStrategyFromTrades,
+  getBySymbolFromTrades,
+  getStreakAnalysisFromTrades
 };

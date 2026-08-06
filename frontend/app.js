@@ -380,27 +380,7 @@ function updateTopBarTotalPnL() {
 
 function handleScannerUpdate(data) {
   scannerCoins = data.coins || [];
-  const tbody  = document.getElementById('scanner-tbody');
-  if (!tbody) return;
-  if (tbody.querySelectorAll('tr').length === 0) { renderScannerTable(); return; }
-  scannerCoins.forEach(coin => {
-    const row = document.getElementById('row-' + coin.symbol);
-    if (!row) return;
-    const scoreEl = row.querySelector('.score-cell');
-    if (scoreEl) {
-      const score = coin.score?.total || coin.score || 0;
-      scoreEl.innerHTML = coin.scoreDisplay || score;
-      scoreEl.className = 'score-cell ' + getScoreClass(score);
-    }
-    updateGateCells(row, coin);
-    const wmCell     = row.querySelector('.wm-cell');
-    if (wmCell) wmCell.innerHTML = renderWMBadge(coin.wmState, coin.wmType);
-    const statusCell = row.querySelector('.status-cell');
-    if (statusCell) statusCell.innerHTML = renderStatusBadges(coin);
-    const allPass = coin.mandatoryPassed && coin.confirmationPassed;
-    row.className = [coin.isRanging ? 'row-ranging' : '', coin.openTrade ? 'row-trade-active' : '',
-      allPass ? 'row-all-gates' : '', coin.wmState === 'READY' ? 'row-wm-ready' : ''].filter(Boolean).join(' ');
-  });
+  renderScannerTable();
 }
 
 function updateGateCells(row, coin) {

@@ -53,15 +53,18 @@ multiMarket.setBroadcast(broadcast);
 
 async function sendInitialState(ws) {
   try {
-    const [settings, trades, signals, scannerData] = await Promise.all([
+    const [settings, trades, signals, storedCoinStates] = await Promise.all([
       storage.loadSettings(),
       storage.loadTrades(),
       storage.getSignals({ limit: 100 }),
       storage.getAllCoinStates()
     ]);
 
+    const liveScannerState = scanner.getScannerState();
+    const rawCoinList = (liveScannerState && liveScannerState.length > 0) ? liveScannerState : storedCoinStates;
+
     const currentPrices = websocketManager.getAllPrices();
-    const coinsWithLivePrices = (scannerData || []).map(coin => ({
+    const coinsWithLivePrices = (rawCoinList || []).map(coin => ({
       ...coin, price: currentPrices[coin.symbol] || coin.price
     }));
 
@@ -419,12 +422,24 @@ app.get('/api/balance', async (req, res) => {
 
 app.get('/api/analytics', async (req, res) => {
   try {
-    const summary     = analytics.getSummary();
-    const equityCurve = analytics.getEquityCurve();
-    const byDirection = analytics.getByDirection();
-    const byStrategy  = analytics.getByStrategy();
-    const bySymbol    = analytics.getBySymbol(10);
-    const streaks     = analytics.getStreakAnalysis();
+    let summary     = analytics.getSummary();
+    let equityCurve = analytics.getEquityCurve();
+    let byDirection = analytics.getByDirection();
+    let byStrategy  = analytics.getByStrategy();
+    let bySymbol    = analytics.getBySymbol(10);
+    let streaks     = analytics.getStreakAnalysis();
+
+    if (!summary || summary.totalTrades === 0) {
+      const tradesObj   = await storage.loadTrades();
+      const closed      = tradesObj.closed || [];
+      summary     = analytics.getSummaryFromTrades(closed, tradesObj.demoBalance || 10000);
+      equityCurve = analytics.getEquityCurveFromTrades(closed, tradesObj.demoBalance || 10000);
+      byDirection = analytics.getByDirectionFromTrades(closed);
+      byStrategy  = analytics.getByStrategyFromTrades(closed);
+      bySymbol    = analytics.getBySymbolFromTrades(closed, 10);
+      streaks     = analytics.getStreakAnalysisFromTrades(closed);
+    }
+
     res.json({
       equityCurve, winLossRatio: { wins: summary.wins, losses: summary.losses, winRate: summary.winRate },
       byDirection, byTrigger: byStrategy, topCoins: bySymbol.top, bottomCoins: bySymbol.bottom,

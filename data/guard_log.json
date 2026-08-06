@@ -1,5 +1,21 @@
 [
   {
+    "timestamp": "2026-08-06T13:35:57.008Z",
+    "condition": "cooldown_active",
+    "reason": "Cooldown active — 2m remaining after last loss trade",
+    "attemptedSymbol": "SKYAIUSDT",
+    "attemptedDir": "LONG",
+    "score": 57
+  },
+  {
+    "timestamp": "2026-08-06T13:30:57.061Z",
+    "condition": "cooldown_active",
+    "reason": "Cooldown active — 7m remaining after last loss trade",
+    "attemptedSymbol": "SKYAIUSDT",
+    "attemptedDir": "LONG",
+    "score": 57
+  },
+  {
     "timestamp": "2026-08-06T13:29:25.742Z",
     "condition": "cooldown_active",
     "reason": "Cooldown active — 9m remaining after last loss trade",
