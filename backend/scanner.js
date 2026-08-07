@@ -49,9 +49,13 @@ function getLastAutoScanHeartbeat() { return lastAutoScanHeartbeat; }
 
 // ── Issue 2: live settings update ─────────────────────────────────
 function updateSettings(newSettings) {
+  const oldTF = settingsRef.timeframe;
   settingsRef = { ...settingsRef, ...newSettings };
   tradingGuard.setSettings(settingsRef);
   exitManager.setSettings(settingsRef);
+  if (newSettings.timeframe && newSettings.timeframe !== oldTF && activeCoinList.length) {
+    websocketManager.restartKlineStream(activeCoinList, settingsRef.timeframe, onCandleClose);
+  }
   console.log(`[SCANNER] Settings updated live — TF: ${settingsRef.timeframe}, AutoTrade: ${settingsRef.autoTradeEnabled}`);
 }
 
