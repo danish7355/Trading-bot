@@ -415,9 +415,15 @@ async function processTPSLAction(trade, action, closePrice) {
     trade.realizedPnL += pnl;
     trade.remainingPct -= closePct;
     trade.trailingActive = true;
-    trade.trailingStop   = trade.direction === 'LONG'
-      ? closePrice - (currentATR * 1.0)
-      : closePrice + (currentATR * 1.0);
+    
+    // Move stopLoss to breakeven or better on TP1 hit
+    if (trade.direction === 'LONG') {
+      trade.stopLoss     = Math.max(trade.stopLoss || 0, trade.entryPrice);
+      trade.trailingStop = Math.max(closePrice - (currentATR * 1.0), trade.entryPrice);
+    } else {
+      trade.stopLoss     = Math.min(trade.stopLoss || Infinity, trade.entryPrice);
+      trade.trailingStop = Math.min(closePrice + (currentATR * 1.0), trade.entryPrice);
+    }
 
     await storage.saveTrade(trade);
     tradeLogger.onTPHit(trade, 1);

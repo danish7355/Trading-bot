@@ -357,13 +357,15 @@ function decideOutcomeLabel(reason) {
 }
 
 function recalculateTPAfterPartial(trade, currentPrice, atr) {
-  // After a 50% partial exit, tighten the remaining position's TP and SL
+  // After a 50% partial exit, ratchet remaining position's SL to breakeven or better
   if (trade.direction === 'LONG') {
-    trade.stopLoss = currentPrice - atr; // move SL to breakeven-ish
-    trade.tp3      = currentPrice + (atr * 2.5);
+    const minTargetSL = Math.max(trade.entryPrice, currentPrice - atr);
+    trade.stopLoss    = Math.max(trade.stopLoss || 0, minTargetSL);
+    trade.tp3         = Math.max(trade.tp3 || 0, currentPrice + (atr * 2.5));
   } else {
-    trade.stopLoss = currentPrice + atr;
-    trade.tp3      = currentPrice - (atr * 2.5);
+    const maxTargetSL = Math.min(trade.entryPrice, currentPrice + atr);
+    trade.stopLoss    = Math.min(trade.stopLoss || Infinity, maxTargetSL);
+    trade.tp3         = Math.min(trade.tp3 || Infinity, currentPrice - (atr * 2.5));
   }
 }
 
@@ -427,6 +429,7 @@ module.exports = {
   evaluateExit,
   tightenStop,
   applyPartialExit,
+  recalculateTPAfterPartial,
   runExitEvaluationsForSymbol,
   killSwitchExitAll,
   loadExitLog,

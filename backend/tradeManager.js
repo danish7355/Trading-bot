@@ -100,13 +100,23 @@ function calculateLivePnL(trade, currentPrice) {
   }
 
   const unrealizedPnL = rawPnL * trade.remainingPct;
-  return { unrealizedPnL, pnlPct };
+  const totalPnL = (trade.realizedPnL || 0) + unrealizedPnL;
+  return { unrealizedPnL, pnlPct, totalPnL };
 }
 
 function checkTPSL(trade, currentPrice) {
   if (trade.status !== 'OPEN') return null;
 
   if (trade.direction === 'LONG') {
+    // 1. Trailing stop check FIRST if active (tighter protection than initial SL)
+    if (trade.trailingActive && trade.trailingStop !== null && currentPrice <= trade.trailingStop) {
+      return { action: 'TRAILING_HIT', closePrice: trade.trailingStop };
+    }
+    // 2. Initial Stop Loss check
+    if (trade.stopLoss !== null && currentPrice <= trade.stopLoss) {
+      return { action: 'SL_HIT', closePrice: trade.stopLoss };
+    }
+    // 3. Take Profit checks
     if (!trade.tp1Hit && currentPrice >= trade.tp1) {
       return { action: 'TP1_HIT', closePrice: trade.tp1 };
     }
@@ -116,13 +126,16 @@ function checkTPSL(trade, currentPrice) {
     if (trade.tp2Hit && !trade.tp3Hit && currentPrice >= trade.tp3) {
       return { action: 'TP3_HIT', closePrice: trade.tp3 };
     }
-    if (currentPrice <= trade.stopLoss) {
-      return { action: 'SL_HIT', closePrice: trade.stopLoss };
-    }
-    if (trade.trailingActive && trade.trailingStop && currentPrice <= trade.trailingStop) {
+  } else {
+    // 1. Trailing stop check FIRST if active for SHORT
+    if (trade.trailingActive && trade.trailingStop !== null && currentPrice >= trade.trailingStop) {
       return { action: 'TRAILING_HIT', closePrice: trade.trailingStop };
     }
-  } else {
+    // 2. Initial Stop Loss check
+    if (trade.stopLoss !== null && currentPrice >= trade.stopLoss) {
+      return { action: 'SL_HIT', closePrice: trade.stopLoss };
+    }
+    // 3. Take Profit checks
     if (!trade.tp1Hit && currentPrice <= trade.tp1) {
       return { action: 'TP1_HIT', closePrice: trade.tp1 };
     }
@@ -131,12 +144,6 @@ function checkTPSL(trade, currentPrice) {
     }
     if (trade.tp2Hit && !trade.tp3Hit && currentPrice <= trade.tp3) {
       return { action: 'TP3_HIT', closePrice: trade.tp3 };
-    }
-    if (currentPrice >= trade.stopLoss) {
-      return { action: 'SL_HIT', closePrice: trade.stopLoss };
-    }
-    if (trade.trailingActive && trade.trailingStop && currentPrice >= trade.trailingStop) {
-      return { action: 'TRAILING_HIT', closePrice: trade.trailingStop };
     }
   }
 
@@ -148,15 +155,29 @@ function updateTrailingStop(trade, currentPrice, currentATR = 100) {
 
   const trailMult = 1.0;
   if (trade.direction === 'LONG') {
-    const newTrailing = currentPrice - (currentATR * trailMult);
+    const calculatedTrailing = currentPrice - (currentATR * trailMult);
+    // Trailing stop must never drop below entry price (breakeven) or previous trailing stop / stopLoss
+    const minFloor = Math.max(trade.entryPrice, trade.stopLoss || 0);
+    const newTrailing = Math.max(calculatedTrailing, minFloor);
     if (trade.trailingStop === null || newTrailing > trade.trailingStop) {
       trade.trailingStop = newTrailing;
+      // Ratchet stopLoss up alongside trailingStop
+      if (trade.stopLoss === null || newTrailing > trade.stopLoss) {
+        trade.stopLoss = newTrailing;
+      }
       return true;
     }
   } else {
-    const newTrailing = currentPrice + (currentATR * trailMult);
+    const calculatedTrailing = currentPrice + (currentATR * trailMult);
+    // Trailing stop for short must never rise above entry price or previous trailing stop / stopLoss
+    const maxCeiling = Math.min(trade.entryPrice, trade.stopLoss || Infinity);
+    const newTrailing = Math.min(calculatedTrailing, maxCeiling);
     if (trade.trailingStop === null || newTrailing < trade.trailingStop) {
       trade.trailingStop = newTrailing;
+      // Ratchet stopLoss down alongside trailingStop
+      if (trade.stopLoss === null || newTrailing < trade.stopLoss) {
+        trade.stopLoss = newTrailing;
+      }
       return true;
     }
   }
