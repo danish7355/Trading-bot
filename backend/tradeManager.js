@@ -1,6 +1,6 @@
 const { generateUUID, formatUTCDateTime } = require('./utils');
 
-function createTrade(signal, entryPrice, atr = 100, fib = {}, settings = {}) {
+function createTrade(signal, entryPrice, atr = 100, fib = {}, settings = {}, engineName = 'v1') {
   const direction = signal.direction;
   const demoBalance = settings.demoBalance || 10000;
   const posSizePct = settings.trade?.positionSizePct || 5;
@@ -50,6 +50,7 @@ function createTrade(signal, entryPrice, atr = 100, fib = {}, settings = {}) {
     closedAt: null,
     closedAtUTC: null,
     symbol: signal.symbol,
+    strategyEngine: engineName,
     timeframe: signal.timeframe || '4h',
     exchange: settings.exchange || 'binance',
     direction,

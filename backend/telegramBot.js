@@ -225,6 +225,20 @@ Exit Triggers: ${triggers}`;
   await sendMessage(text);
 }
 
+async function sendWatchdogExitAlert(trade, exitPrice, pnlAmount) {
+  const settings = await storage.loadSettings();
+  if (!settings.telegram?.alerts?.slHit) return; // reuse slHit gate — same criticality
+  const sign   = pnlAmount >= 0 ? '+' : '-';
+  const pnlPct = ((Math.abs(pnlAmount) / trade.positionValue) * 100).toFixed(2);
+  const text = `🐕 <b>WATCHDOG EXIT — ${trade.symbol} ${trade.direction}</b>
+━━━━━━━━━━━━━━━━━━━━━
+Time: ${formatUTCDateTime(Date.now())}
+Strategy: ${(trade.strategyEngine || 'v1').toUpperCase()} — reversal signal against position
+Entry: $${trade.entryPrice.toFixed(2)} → Exit: $${typeof exitPrice === 'number' ? exitPrice.toFixed(4) : exitPrice}
+Realized P&L: ${sign}$${Math.abs(pnlAmount).toFixed(2)} (${sign}${pnlPct}%)`;
+  await sendMessage(text);
+}
+
 async function sendKillSwitchAlert(activated) {
   const text = activated
     ? `⛔ <b>KILL SWITCH ACTIVATED</b>\n━━━━━━━━━━━━━━━━━━━━━\nAll trading halted immediately.\nAll open positions being closed.\nTime: ${formatUTCDateTime(Date.now())}`
@@ -237,4 +251,5 @@ module.exports = {
   sendTPAlert, sendSLAlert, sendTrailingHitAlert, sendManualCloseAlert,
   sendTrailingMovedAlert, sendDailyLimitAlert, sendRangingAlert, sendTestAlert,
   sendStopTightenedAlert, sendPartialExitAlert, sendExitManagerAlert, sendKillSwitchAlert,
+  sendWatchdogExitAlert,
 };

@@ -4,12 +4,15 @@ const strategyV2     = require('./strategy_v2');
 const strategyV3     = require('./strategy_v3');
 const tradeManager   = require('./tradeManager');
 
-function getActiveStrategyEngine() {
-  const engine = settingsRef.strategyEngine || (settingsRef.activePreset === 'smc-confluence' ? 'v3' : settingsRef.activePreset === 'smc-structure' ? 'v2' : 'v1');
-  if (engine === 'v3') return strategyV3;
-  if (engine === 'v2') return strategyV2;
+function getActiveStrategyEngineName() {
+  return settingsRef.strategyEngine || (settingsRef.activePreset === 'smc-confluence' ? 'v3' : settingsRef.activePreset === 'smc-structure' ? 'v2' : 'v1');
+}
+function getEngineByName(name) {
+  if (name === 'v3') return strategyV3;
+  if (name === 'v2') return strategyV2;
   return strategy;
 }
+function getActiveStrategyEngine() { return getEngineByName(getActiveStrategyEngineName()); }
 const deltaExchange  = require('./deltaExchange');
 const telegram       = require('./telegramBot');
 const storage        = require('./storage');
@@ -198,16 +201,17 @@ async function onCandleClose(symbol, closeTime) {
       coinData[symbol].candles = newCandles;
     }
 
-    // Section 4: run exit manager for any open trades on this symbol
-    const hasOpenTrades = openTrades.some(t => t.symbol === symbol && t.status === 'OPEN');
-    if (hasOpenTrades) {
+    // Section 4: exitManager only manages v1 trades — v2/v3 own their exit via watchdog below
+    const hasOpenV1Trades = openTrades.some(t => t.symbol === symbol && t.status === 'OPEN' && (t.strategyEngine || 'v1') === 'v1');
+    if (hasOpenV1Trades) {
       const candles = coinData[symbol].candles;
       const highs  = candles.map(c => c.high);
       const lows   = candles.map(c => c.low);
       const closes = candles.map(c => c.close);
       const atr    = indicators.calculateATR(highs, lows, closes, 14);
+      const v1Trades = openTrades.filter(t => (t.strategyEngine || 'v1') === 'v1');
       await exitManager.runExitEvaluationsForSymbol(
-        openTrades,
+        v1Trades,
         symbol,
         {
           candles,
@@ -221,15 +225,23 @@ async function onCandleClose(symbol, closeTime) {
       );
     }
 
-    // Watchdog check for open trades (SMC / PA v2 / v3)
-    openTrades.filter(t => t.symbol === symbol && t.status === 'OPEN').forEach(trade => {
-      const activeEngine = getActiveStrategyEngine();
-      const alert = activeEngine.watchdogCheck ? activeEngine.watchdogCheck(trade, coinData[symbol].candles) : null;
+    // Watchdog check for v2/v3 trades — dispatched by the ENGINE THAT OPENED EACH TRADE,
+    // not whichever engine happens to be globally selected right now. A confirmed reversal
+    // signal closes the position immediately (this IS v2/v3's exit method).
+    const watchdogTrades = openTrades.filter(t => t.symbol === symbol && t.status === 'OPEN' && (t.strategyEngine === 'v2' || t.strategyEngine === 'v3'));
+    for (const trade of watchdogTrades) {
+      const engine = getEngineByName(trade.strategyEngine);
+      const alert = engine.watchdogCheck ? engine.watchdogCheck(trade, coinData[symbol].candles) : null;
       if (alert) {
         console.warn(`[WATCHDOG] ${alert.message}`);
         broadcastFn('WATCHDOG_ALERT', alert);
+        const exitPrice = websocketManager.getCurrentPrice(symbol) || trade.currentPrice || trade.entryPrice;
+        let pnl = ((exitPrice - trade.entryPrice) / trade.entryPrice) * trade.positionValue * trade.leverage * trade.remainingPct;
+        if (trade.direction === 'SHORT') pnl = ((trade.entryPrice - exitPrice) / trade.entryPrice) * trade.positionValue * trade.leverage * trade.remainingPct;
+        trade.realizedPnL += pnl;
+        await finishCloseTrade(trade, exitPrice, 'WATCHDOG_EXIT');
       }
-    });
+    }
 
     const result = await getActiveStrategyEngine().evaluateCoin(
       symbol, coinData[symbol].candles, settingsRef, openTrades, autoTradePaused
@@ -276,7 +288,7 @@ async function handle10GateTrade(symbol, result) {
   }
 
   const entryPrice = websocketManager.getCurrentPrice(symbol) || signal.signalCandleClose;
-  const trade      = tradeManager.createTrade(signal, entryPrice, result.atr, result.fib, settingsRef);
+  const trade      = tradeManager.createTrade(signal, entryPrice, result.atr, result.fib, settingsRef, getActiveStrategyEngineName());
 
   if (settingsRef.exchange === 'delta' && settingsRef.deltaMode === 'live') {
     try {
@@ -332,7 +344,7 @@ async function handleWMTrade(symbol, result) {
   }
 
   const entryPrice = websocketManager.getCurrentPrice(symbol) || signal.signalCandleClose;
-  const trade      = tradeManager.createTrade(signal, entryPrice, result.atr, result.fib, settingsRef);
+  const trade      = tradeManager.createTrade(signal, entryPrice, result.atr, result.fib, settingsRef, 'v1');
 
   if (settingsRef.exchange === 'delta' && settingsRef.deltaMode === 'live') {
     try {
@@ -381,15 +393,31 @@ async function onPriceTick(symbol, price) {
           candleData.candles.map(c => c.close), 14)
       : trade.atrAtEntry;
 
-    const action = tradeManager.checkTPSL(trade, price);
-    if (action) {
-      await processTPSLAction(trade, action.action, action.closePrice);
-    } else if (trade.trailingActive && currentATR) {
-      const moved = tradeManager.updateTrailingStop(trade, price, currentATR);
-      if (moved) {
-        const tradesObj = await storage.loadTrades();
-        await storage.saveTrades(tradesObj);
-        await telegram.sendTrailingMovedAlert(trade, trade.trailingStop);
+    if ((trade.strategyEngine || 'v1') === 'v1') {
+      // v1: owns its full fixed TP1/TP2/TP3 ladder + trailing stop
+      const action = tradeManager.checkTPSL(trade, price);
+      if (action) {
+        await processTPSLAction(trade, action.action, action.closePrice);
+        continue;
+      } else if (trade.trailingActive && currentATR) {
+        const moved = tradeManager.updateTrailingStop(trade, price, currentATR);
+        if (moved) {
+          const tradesObj = await storage.loadTrades();
+          await storage.saveTrades(tradesObj);
+          await telegram.sendTrailingMovedAlert(trade, trade.trailingStop);
+        }
+      }
+    } else {
+      // v2/v3: no fixed TP ladder — their own watchdog signal (checked on candle close)
+      // is the real exit. Here we only enforce the strategy's own entry-computed SL
+      // as a hard safety floor in case price gaps through it between candle closes.
+      const slHit = trade.direction === 'LONG' ? price <= trade.stopLoss : price >= trade.stopLoss;
+      if (slHit) {
+        let pnl = ((price - trade.entryPrice) / trade.entryPrice) * trade.positionValue * trade.leverage * trade.remainingPct;
+        if (trade.direction === 'SHORT') pnl = ((trade.entryPrice - price) / trade.entryPrice) * trade.positionValue * trade.leverage * trade.remainingPct;
+        trade.realizedPnL += pnl;
+        await finishCloseTrade(trade, trade.stopLoss, 'SL');
+        continue;
       }
     }
 
@@ -529,6 +557,8 @@ async function finishCloseTrade(trade, exitPrice, outcome) {
     await telegram.sendTrailingHitAlert(trade, exitPrice, trade.realizedPnL);
   } else if (outcome === 'MANUAL') {
     await telegram.sendManualCloseAlert(trade, exitPrice, trade.realizedPnL);
+  } else if (outcome === 'WATCHDOG_EXIT') {
+    await telegram.sendWatchdogExitAlert(trade, exitPrice, trade.realizedPnL);
   }
 
   if (trade.isLiveTrade && settingsRef.deltaMode === 'live') {
