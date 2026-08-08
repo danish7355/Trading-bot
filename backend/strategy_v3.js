@@ -1,6 +1,16 @@
 /**
  * strategy_v3.js — Price Action / SMC + EMA5/Bollinger Confluence Strategy Engine
  *
+ * v3.1 — Fixes applied against a live paper-trade audit (ENAUSDT BOS_CONTINUATION):
+ *   FIX 1: directionsToEvaluate no longer locks reversal-type triggers out of the
+ *          opposite direction from HTF bias. Bias-agreement is now enforced only
+ *          on BOS_CONTINUATION, where it actually belongs.
+ *   FIX 2: EMA_BB_REVERSAL's "armed" (0.6-strength) case now actually requires
+ *          confirmEMABBReversal() to confirm within the grace window before being
+ *          credited — previously it was credited immediately on arming.
+ *   FIX 3: HTF bias fallback to execution-timeframe candles is now loud (warns)
+ *          and discounted in the confidence calculation instead of silent.
+ *
  * Extends v2 with:
  * 1. 4th Entry Trigger Family: EMA5 Trend-Health + Reversal Candle + Bollinger Extension (EMA_BB_REVERSAL)
  * 2. Hard Regime Gate (bandWalkActive): Disqualifies EMA_BB_REVERSAL during strong trend "band walks"
@@ -70,36 +80,60 @@ function bandWalkActive(candles, bbUpper, bbLower, lookback = 5) {
 
 // ── Step 3b: EMA5 / Doji / Bollinger Extension Trigger ──────────
 
+/**
+ * FIX 2: previously this only inspected the LAST candle. If it was a fully
+ * detached doji at the band, it fired at strength 1.0 (unchanged below — that
+ * case was already self-contained and correct). If it was only "armed" (doji +
+ * band touch, not yet detached), it ALSO fired immediately at strength 0.6 —
+ * confirmEMABBReversal() was never consulted. Now the armed case searches the
+ * grace window and requires an actual EMA5-cross confirmation before firing.
+ */
 function detectEMABBReversal(candles, direction, profile, atrVal, atKeyLevel = false, bbObj = null, ema5Arr = null) {
   if (!atKeyLevel || !candles || candles.length < 20 || !atrVal) return null;
   const n = candles.length;
-  const candle = candles[n - 1];
-  const body = Math.abs(candle.close - candle.open);
-  const candleRange = candle.high - candle.low;
-
-  if (candleRange === 0) return null;
-
-  const isDoji = (body / candleRange) <= (profile.dojiBodyMaxPct || 0.20);
-  if (!isDoji) return null;
+  const last = n - 1;
+  const grace = profile.emaSignalGrace || 2;
 
   const closes = candles.map(c => c.close);
-  const ema5 = ema5Arr ? ema5Arr[n - 1] : indicators.calculateEMA(closes, profile.emaFast || 5)[n - 1];
+  const ema5 = ema5Arr || indicators.calculateEMA(closes, profile.emaFast || 5);
   const bb = bbObj || indicators.calculateBollingerBands(closes, profile.bbLength || 20, profile.bbStd || 2.0);
 
-  if (ema5 === null || bb.upper[n - 1] === null || bb.lower[n - 1] === null) return null;
+  const evalArm = (idx) => {
+    const candle = candles[idx];
+    const body = Math.abs(candle.close - candle.open);
+    const range = candle.high - candle.low;
+    if (range === 0 || ema5[idx] === null || bb.upper[idx] === null || bb.lower[idx] === null) return null;
 
-  const gap = direction === 'LONG' ? (ema5 - candle.high) : (candle.low - ema5);
-  const isDetached = gap > 0 && gap >= (profile.emaGapAtrMult || 0.35) * atrVal;
+    const isDoji = (body / range) <= (profile.dojiBodyMaxPct || 0.20);
+    if (!isDoji) return null;
 
-  const touchedBand = direction === 'LONG'
-    ? (candle.low <= bb.lower[n - 1])
-    : (candle.high >= bb.upper[n - 1]);
+    const touchedBand = direction === 'LONG'
+      ? (candle.low <= bb.lower[idx])
+      : (candle.high >= bb.upper[idx]);
+    if (!touchedBand) return null;
 
-  if (isDoji && isDetached && touchedBand) {
-    return { type: 'EMA_BB_REVERSAL', strength: 1.0, armedAt: n - 1 };
+    const gap = direction === 'LONG' ? (ema5[idx] - candle.high) : (candle.low - ema5[idx]);
+    const isDetached = gap > 0 && gap >= (profile.emaGapAtrMult || 0.35) * atrVal;
+    return { isDetached };
+  };
+
+  // Case 1 (unchanged): last candle alone is fully detached + doji + band touch —
+  // a self-contained signal, fires immediately.
+  const lastArm = evalArm(last);
+  if (lastArm && lastArm.isDetached) {
+    return { type: 'EMA_BB_REVERSAL', strength: 1.0, armedAt: last };
   }
-  if (isDoji && touchedBand && !isDetached) {
-    return { type: 'EMA_BB_REVERSAL', strength: 0.6, armedAt: n - 1 };
+
+  // Case 2 (fixed): search the grace window for a weaker "armed" candle and
+  // REQUIRE confirmEMABBReversal() to confirm before crediting it.
+  const searchStart = Math.max(0, last - grace);
+  for (let armIdx = searchStart; armIdx <= last; armIdx++) {
+    const arm = evalArm(armIdx);
+    if (!arm || arm.isDetached) continue; // fully-detached case already handled above
+    const armedTrigger = { armedAt: armIdx };
+    if (confirmEMABBReversal(candles, armedTrigger, direction, profile, ema5)) {
+      return { type: 'EMA_BB_REVERSAL', strength: 0.6, armedAt: armIdx };
+    }
   }
 
   return null;
@@ -109,7 +143,6 @@ function confirmEMABBReversal(candles, armedTrigger, direction, profile, ema5Arr
   if (!armedTrigger || armedTrigger.armedAt === undefined) return false;
   const n = candles.length;
   const grace = profile.emaSignalGrace || 2;
-  const windowSlice = candles.slice(armedTrigger.armedAt, Math.min(n, armedTrigger.armedAt + grace + 1));
 
   const closes = candles.map(c => c.close);
   const ema5 = ema5Arr || indicators.calculateEMA(closes, profile.emaFast || 5);
@@ -214,8 +247,19 @@ async function evaluateCoin(symbol, candles, settings, openTrades = [], autoTrad
   const { ema5, bb } = calculateConfluenceIndicators(candles, profile);
 
   // 1. HTF Bias
+  // FIX 3: getHTFBias() silently used execution-timeframe candles whenever the
+  // caller didn't supply real higher-timeframe data, with no visibility into
+  // that degradation. Now it's loud, and the confidence formula discounts it.
+  const usingRealHTF = !!(htfCandles && htfCandles.length > 0);
+  if (!usingRealHTF) {
+    console.warn(
+      `[strategy_v3] ${symbol}: no HTF candles supplied — bias is being computed from ` +
+      `${timeframe} candles, not true ${profile.htf} structure. Pass real ${profile.htf} ` +
+      `candles to evaluateCoin() for an accurate HTF read.`
+    );
+  }
   const bias = strategyV2.getHTFBias(htfCandles || candles, profile.swingLookback);
-  const htfBiasStrength = bias === 'RANGING' ? 0.5 : 1.0;
+  const htfBiasStrength = !usingRealHTF ? 0.5 : (bias === 'RANGING' ? 0.5 : 1.0);
 
   // 2. Swings
   const swings = strategyV2.detectSwings(candles, profile.swingLookback);
@@ -223,14 +267,20 @@ async function evaluateCoin(symbol, candles, settings, openTrades = [], autoTrad
   // 3. Regime Gate Check (bandWalkActive)
   const isWalkingBand = bandWalkActive(candles, bb.upper, bb.lower, 5);
 
-  const directionsToEvaluate = bias === 'BULLISH' ? ['LONG'] : bias === 'BEARISH' ? ['SHORT'] : ['LONG', 'SHORT'];
+  // FIX 1: previously this locked evaluation to a single direction whenever bias
+  // wasn't RANGING, which made it structurally impossible for reversal-type
+  // triggers (LIQUIDITY_SWEEP_REVERSAL, EMA_BB_REVERSAL) to ever fire against
+  // the prevailing bias — even though catching a turn is their entire purpose.
+  // Both directions are now always evaluated; bias-agreement is enforced only
+  // on BOS_CONTINUATION below, where it actually belongs.
+  const directionsToEvaluate = ['LONG', 'SHORT'];
 
   let bestSetup = null;
 
   for (const direction of directionsToEvaluate) {
     const triggersFiredMap = {};
 
-    // Trigger A: Liquidity Sweep
+    // Trigger A: Liquidity Sweep (reversal-type — bias-independent by design)
     const swingTarget = direction === 'LONG'
       ? (swings.lows[swings.lows.length - 1]?.price || null)
       : (swings.highs[swings.highs.length - 1]?.price || null);
@@ -260,8 +310,16 @@ async function evaluateCoin(symbol, candles, settings, openTrades = [], autoTrad
     }
 
     // Trigger D: BOS Continuation
+    // FIX 1 (cont.): this is a continuation trigger — it should only count when
+    // it agrees with HTF bias. That agreement used to be enforced by the outer
+    // directionsToEvaluate lockout; now it's enforced explicitly, right here,
+    // instead of accidentally blocking every other trigger type too.
     const bosChoch = strategyV2.detectBOSChoCH(candles, bias);
-    if (bosChoch && bosChoch.type === 'BOS' && bosChoch.direction === direction) {
+    const biasAgrees =
+      bias === 'RANGING' ||
+      (bias === 'BULLISH' && direction === 'LONG') ||
+      (bias === 'BEARISH' && direction === 'SHORT');
+    if (bosChoch && bosChoch.type === 'BOS' && bosChoch.direction === direction && biasAgrees) {
       triggersFiredMap['BOS_CONTINUATION'] = 1.0;
     }
 
@@ -352,6 +410,9 @@ async function evaluateCoin(symbol, candles, settings, openTrades = [], autoTrad
   const slTp = strategyV2.calculateSLTP(bestSetup.direction, triggerLevel, currentPrice, atrVal, impulseLeg);
 
   // Position Sizing Tier
+  // NOTE: sizeTier is computed and attached to the signal below. If live trades
+  // are still opening at 100% risk regardless of this value, the execution/order
+  // module isn't reading signal.sizeTier — that code isn't in this file.
   const sizeTier = strategyV2.sizeEntry(bestSetup.triggersFired.length, bestSetup.momentumScore);
 
   const signal = {
@@ -381,6 +442,7 @@ async function evaluateCoin(symbol, candles, settings, openTrades = [], autoTrad
     },
     confidence: bestSetup.confidence,
     triggersFired: bestSetup.triggersFired,
+    usingRealHTF,
     sizeTier,
     sl: slTp.sl,
     tp1: slTp.tp1,
