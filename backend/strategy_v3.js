@@ -1,7 +1,7 @@
 /**
  * strategy_v3.js — Price Action / SMC + EMA5/Bollinger Confluence Strategy Engine
  *
- * v3.1 — Fixes applied against a live paper-trade audit (ENAUSDT BOS_CONTINUATION):
+ * v3.2 — Fixes applied against a live paper-trade audit (ENAUSDT BOS_CONTINUATION):
  *   FIX 1: directionsToEvaluate no longer locks reversal-type triggers out of the
  *          opposite direction from HTF bias. Bias-agreement is now enforced only
  *          on BOS_CONTINUATION, where it actually belongs.
@@ -10,6 +10,11 @@
  *          credited — previously it was credited immediately on arming.
  *   FIX 3: HTF bias fallback to execution-timeframe candles is now loud (warns)
  *          and discounted in the confidence calculation instead of silent.
+ *   FIX 4 (new this round): TP3 now uses a real opposing structural level via
+ *          strategyV2.findOpposingStructure(), instead of always silently
+ *          falling back to a flat 4R extension — same root cause as the
+ *          strategy_v2.js fix, closed here too since this is the engine
+ *          that's actually live (SMC_V3_ trigger prefix).
  *
  * Extends v2 with:
  * 1. 4th Entry Trigger Family: EMA5 Trend-Health + Reversal Candle + Bollinger Extension (EMA_BB_REVERSAL)
@@ -407,12 +412,16 @@ async function evaluateCoin(symbol, candles, settings, openTrades = [], autoTrad
   // Calculate SL / TP
   const triggerLevel = bestSetup.sweep?.level || bestSetup.ob?.low || currentPrice;
   const impulseLeg = bestSetup.ob?.impulseMove || (atrVal * 3);
-  const slTp = strategyV2.calculateSLTP(bestSetup.direction, triggerLevel, currentPrice, atrVal, impulseLeg);
+  // FIX 4: compute a real opposing structure level and pass it through —
+  // previously omitted here too, so TP3 always used the flat 4R fallback.
+  const opposingStructureLevel = strategyV2.findOpposingStructure(candles, bestSetup.direction, currentPrice, profile);
+  const slTp = strategyV2.calculateSLTP(bestSetup.direction, triggerLevel, currentPrice, atrVal, impulseLeg, opposingStructureLevel);
 
   // Position Sizing Tier
   // NOTE: sizeTier is computed and attached to the signal below. If live trades
   // are still opening at 100% risk regardless of this value, the execution/order
-  // module isn't reading signal.sizeTier — that code isn't in this file.
+  // module isn't reading signal.sizeTier — that code isn't in this file (see
+  // backend/tradeManager.js).
   const sizeTier = strategyV2.sizeEntry(bestSetup.triggersFired.length, bestSetup.momentumScore);
 
   const signal = {

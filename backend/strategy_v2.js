@@ -1,6 +1,17 @@
 /**
  * strategy_v2.js — Price Action / Smart Money Concepts (SMC) Strategy Engine
  *
+ * v2.1 — Fixes applied against a live paper-trade audit (ENAUSDT BOS_CONTINUATION):
+ *   FIX 1: TP3 now uses a real opposing structural level (nearest swing high/low
+ *          beyond price) via the new findOpposingStructure(), instead of always
+ *          silently falling back to a flat 4R extension.
+ *   FIX 2: directionsToEvaluate no longer locks reversal-type triggers out of the
+ *          opposite direction from HTF bias. Bias-agreement is now enforced only
+ *          on BOS_CONTINUATION, where it actually belongs.
+ *   NOTE:   passesIntegrityFilters()'s spread check compares two settings values,
+ *           not live order-book data — it isn't a real spread filter yet. Fixing
+ *           that needs the exchange-data file, which wasn't provided.
+ *
  * Core Concepts:
  * 1. Timeframe Structure Profiles (1m, 5m, 15m, 1h, 4h, 1d)
  * 2. HTF Bias Classification (Bullish / Bearish / Ranging)
@@ -253,6 +264,11 @@ function momentumConfirmation(candles, direction, graceCandles = 2) {
 }
 
 // ── Step 5: Fake-Out / Integrity Filters (Hard Gates) ─────────────
+// NOTE: the spread check below compares two SETTINGS values against each
+// other (an assumed/estimated spread vs. a configured max), not real live
+// order-book data. It isn't filtering on actual market spread yet. Making
+// it real requires wiring in live order-book data from the exchange-data
+// module, which wasn't part of this file set.
 
 function passesIntegrityFilters(symbol, currentPrice, volume24h, settings = {}) {
   const minVol = settings.liquidity?.minUsdtVolume24h || 3_000_000;
@@ -279,6 +295,29 @@ function calculateConfidence(structuralScore, momentumScore, htfBiasStrength = 1
 }
 
 // ── Step 7: Structural SL & TP Calculation ───────────────────────
+
+/**
+ * FIX 1: this was previously never given a real opposingStructureLevel by
+ * either evaluateCoin() in this file or in strategy_v3.js — both only
+ * passed 5 of the 6 arguments, so TP3 always fell back to the flat
+ * entryPrice +/- (r * 4.0) branch below, regardless of actual chart
+ * structure. findOpposingStructure() (added below) now supplies a real
+ * value, called from evaluateCoin() before this function runs.
+ */
+function findOpposingStructure(candles, direction, referencePrice, profile) {
+  const swings = detectSwings(candles, profile.swingLookback);
+  if (direction === 'LONG') {
+    const above = swings.highs
+      .filter(h => h.price > referencePrice)
+      .sort((a, b) => a.price - b.price);
+    return above.length > 0 ? above[0].price : null;
+  } else {
+    const below = swings.lows
+      .filter(l => l.price < referencePrice)
+      .sort((a, b) => b.price - a.price);
+    return below.length > 0 ? below[0].price : null;
+  }
+}
 
 function calculateSLTP(direction, triggerLevel, entryPrice, atrPrice, impulseLeg = 0, opposingStructureLevel = null) {
   const bufferMult = 0.25;
@@ -390,14 +429,18 @@ async function evaluateCoin(symbol, candles, settings, openTrades = [], autoTrad
   // 2. Swings on execution timeframe
   const swings = detectSwings(candles, profile.swingLookback);
 
-  const directionsToEvaluate = bias === 'BULLISH' ? ['LONG'] : bias === 'BEARISH' ? ['SHORT'] : ['LONG', 'SHORT'];
+  // FIX 2: previously locked to a single direction whenever bias wasn't
+  // RANGING, which made it impossible for reversal-type triggers to ever
+  // fire against the prevailing bias. Both directions are now always
+  // evaluated; bias-agreement is enforced only on BOS_CONTINUATION below.
+  const directionsToEvaluate = ['LONG', 'SHORT'];
 
   let bestSetup = null;
 
   for (const direction of directionsToEvaluate) {
     const triggersFired = [];
 
-    // Trigger A: Liquidity Sweep
+    // Trigger A: Liquidity Sweep (reversal-type — bias-independent by design)
     const swingTarget = direction === 'LONG'
       ? (swings.lows[swings.lows.length - 1]?.price || null)
       : (swings.highs[swings.highs.length - 1]?.price || null);
@@ -426,8 +469,15 @@ async function evaluateCoin(symbol, candles, settings, openTrades = [], autoTrad
     }
 
     // Trigger D: BOS Continuation
+    // FIX 2 (cont.): continuation only counts when it agrees with HTF bias —
+    // that agreement used to be (incorrectly) enforced for every trigger type
+    // via the outer directionsToEvaluate lockout; now it's explicit and local.
     const bosChoch = detectBOSChoCH(candles, bias);
-    if (bosChoch && bosChoch.type === 'BOS' && bosChoch.direction === direction) {
+    const biasAgrees =
+      bias === 'RANGING' ||
+      (bias === 'BULLISH' && direction === 'LONG') ||
+      (bias === 'BEARISH' && direction === 'SHORT');
+    if (bosChoch && bosChoch.type === 'BOS' && bosChoch.direction === direction && biasAgrees) {
       triggersFired.push('BOS_CONTINUATION');
     }
 
@@ -505,7 +555,10 @@ async function evaluateCoin(symbol, candles, settings, openTrades = [], autoTrad
   // Calculate SL / TP
   const triggerLevel = bestSetup.sweep?.level || bestSetup.ob?.low || currentPrice;
   const impulseLeg = bestSetup.ob?.impulseMove || (atrVal * 3);
-  const slTp = calculateSLTP(bestSetup.direction, triggerLevel, currentPrice, atrVal, impulseLeg);
+  // FIX 1: compute a real opposing structure level and pass it through —
+  // previously omitted, which is why TP3 always used the flat fallback.
+  const opposingStructureLevel = findOpposingStructure(candles, bestSetup.direction, currentPrice, profile);
+  const slTp = calculateSLTP(bestSetup.direction, triggerLevel, currentPrice, atrVal, impulseLeg, opposingStructureLevel);
 
   // Position Sizing Tier
   const sizeTier = sizeEntry(bestSetup.triggersFired.length, bestSetup.momentumScore);
@@ -582,6 +635,7 @@ module.exports = {
   momentumConfirmation,
   passesIntegrityFilters,
   calculateConfidence,
+  findOpposingStructure,
   calculateSLTP,
   sizeEntry,
   watchdogCheck,
