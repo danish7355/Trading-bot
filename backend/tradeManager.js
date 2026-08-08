@@ -1,5 +1,19 @@
 const { generateUUID, formatUTCDateTime } = require('./utils');
 
+/**
+ * v1.1 — Fixes applied against a live paper-trade audit:
+ *   FIX 1: createTrade() now actually applies signal.sizeTier to the position
+ *          size. Previously it was computed by the strategy engines but never
+ *          read here, so every trade opened at full configured size regardless
+ *          of how many triggers fired or how strong the setup was.
+ *   FIX 2 (new): added checkBreakevenLock() — a shared, engine-agnostic check
+ *          that locks the stop to breakeven once a trade has covered a
+ *          meaningful fraction of the distance to TP1, BEFORE TP1 itself is
+ *          reached. This is what actually closes the "runs 40-50% into profit
+ *          then reverses to a loss" gap — previously nothing protected a trade
+ *          between entry and a full TP1 hit.
+ */
+
 function createTrade(signal, entryPrice, atr = 100, fib = {}, settings = {}, engineName = 'v1') {
   const direction = signal.direction;
   const demoBalance = settings.demoBalance || 10000;
@@ -9,7 +23,11 @@ function createTrade(signal, entryPrice, atr = 100, fib = {}, settings = {}, eng
   const tp1Mult = settings.trade?.tp1AtrMultiple || 2.0;
   const tp2Mult = settings.trade?.tp2AtrMultiple || 3.5;
 
-  let positionValue = demoBalance * (posSizePct / 100);
+  // FIX 1: apply the strategy's tiered position size (0.4 / 0.7 / 1.0) before
+  // anything else. Falls back to 1.0 (full size) when a signal doesn't provide
+  // one — e.g. v1/WM signals, which don't compute a sizeTier.
+  const sizeTier = (signal.sizeTier !== undefined && signal.sizeTier !== null) ? signal.sizeTier : 1.0;
+  let positionValue = demoBalance * (posSizePct / 100) * sizeTier;
 
   let sl = 0;
   let tp1 = 0;
@@ -64,9 +82,11 @@ function createTrade(signal, entryPrice, atr = 100, fib = {}, settings = {}, eng
     tp1Hit: false,
     tp2Hit: false,
     tp3Hit: false,
+    breakevenLocked: false,
     trailingStop: null,
     trailingActive: false,
     positionValue: Math.round(positionValue * 100) / 100,
+    sizeTier,
     leverage,
     remainingPct: 1.0,
     realizedPnL: 0,
@@ -103,6 +123,49 @@ function calculateLivePnL(trade, currentPrice) {
   const unrealizedPnL = rawPnL * trade.remainingPct;
   const totalPnL = (trade.realizedPnL || 0) + unrealizedPnL;
   return { unrealizedPnL, pnlPct, totalPnL };
+}
+
+/**
+ * FIX 2: locks the stop to breakeven (+ a small buffer) once price has moved
+ * a configurable fraction of the way from entry to TP1. This runs BEFORE TP1
+ * is hit — it's the piece that was completely missing before. Returns true
+ * only on the candle/tick where it actually moves the stop, so callers can
+ * decide whether to save/broadcast/alert.
+ *
+ * Never loosens the stop — only ever moves it toward locking in more profit,
+ * consistent with how trailing stops already behave in this file.
+ */
+function checkBreakevenLock(trade, currentPrice, breakevenTriggerPct = 0.5) {
+  if (!trade || trade.breakevenLocked || trade.tp1Hit) return false;
+  if (!trade.tp1 || !trade.entryPrice) return false;
+
+  const totalDistance = Math.abs(trade.tp1 - trade.entryPrice);
+  if (totalDistance === 0) return false;
+
+  const progress = trade.direction === 'LONG'
+    ? (currentPrice - trade.entryPrice) / totalDistance
+    : (trade.entryPrice - currentPrice) / totalDistance;
+
+  if (progress < breakevenTriggerPct) return false;
+
+  const buffer = Math.abs(trade.entryPrice - trade.stopLoss) * 0.05; // small — covers fees/slippage, not zero
+
+  if (trade.direction === 'LONG') {
+    const candidate = trade.entryPrice + buffer;
+    if (candidate > trade.stopLoss) {
+      trade.stopLoss = candidate;
+      trade.breakevenLocked = true;
+      return true;
+    }
+  } else {
+    const candidate = trade.entryPrice - buffer;
+    if (candidate < trade.stopLoss) {
+      trade.stopLoss = candidate;
+      trade.breakevenLocked = true;
+      return true;
+    }
+  }
+  return false;
 }
 
 function checkTPSL(trade, currentPrice) {
@@ -189,6 +252,7 @@ function updateTrailingStop(trade, currentPrice, currentATR = 100) {
 module.exports = {
   createTrade,
   calculateLivePnL,
+  checkBreakevenLock,
   checkTPSL,
   updateTrailingStop
 };

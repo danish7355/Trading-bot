@@ -13,6 +13,37 @@ function getEngineByName(name) {
   return strategy;
 }
 function getActiveStrategyEngine() { return getEngineByName(getActiveStrategyEngineName()); }
+
+/**
+ * v1.1 — Fixes applied against a live paper-trade audit:
+ *   FIX 1 (new): v2/v3 never received real higher-timeframe candles — both
+ *          places that call evaluateCoin() only passed 5 of 6 arguments, so
+ *          "HTF bias" was silently computed from the same execution-timeframe
+ *          candles every single time. getHTFCandlesIfNeeded() now fetches the
+ *          real HTF data and both call sites pass it through.
+ *   FIX 2 (new): v2/v3 trades were only ever closed by hitting the static
+ *          entry stop-loss or a watchdog reversal alert — the strategy's own
+ *          TP1/TP2/TP3 and trailing stop were computed but never checked in
+ *          onPriceTick(). They now run through the same checkTPSL/trailing
+ *          pipeline v1 trades use, in addition to (not instead of) the
+ *          watchdog. A shared checkBreakevenLock() also now runs for BOTH
+ *          engines, closing the gap where a trade could run deep into profit
+ *          before TP1 and give it all back with nothing protecting it.
+ */
+async function getHTFCandlesIfNeeded(symbol, engineName, tf) {
+  if (engineName !== 'v2' && engineName !== 'v3') return null;
+  try {
+    const profile = strategyV2.getProfile(tf);
+    const htfTf = profile?.htf;
+    if (!htfTf) return null;
+    const htfCandles = await binanceData.getCandles(symbol, htfTf, 150);
+    return (htfCandles && htfCandles.length > 0) ? htfCandles : null;
+  } catch (err) {
+    console.warn(`[HTF_FETCH] ${symbol}: failed to fetch ${tf}'s HTF candles — falling back to no HTF data this cycle:`, err.message);
+    return null;
+  }
+}
+
 const deltaExchange  = require('./deltaExchange');
 const telegram       = require('./telegramBot');
 const storage        = require('./storage');
@@ -227,7 +258,8 @@ async function onCandleClose(symbol, closeTime) {
 
     // Watchdog check for v2/v3 trades — dispatched by the ENGINE THAT OPENED EACH TRADE,
     // not whichever engine happens to be globally selected right now. A confirmed reversal
-    // signal closes the position immediately (this IS v2/v3's exit method).
+    // signal closes the position immediately (this is IN ADDITION to the TP/trailing
+    // pipeline v2/v3 trades now also run in onPriceTick — see FIX 2 above).
     const watchdogTrades = openTrades.filter(t => t.symbol === symbol && t.status === 'OPEN' && (t.strategyEngine === 'v2' || t.strategyEngine === 'v3'));
     for (const trade of watchdogTrades) {
       const engine = getEngineByName(trade.strategyEngine);
@@ -243,8 +275,14 @@ async function onCandleClose(symbol, closeTime) {
       }
     }
 
+    // FIX 1: fetch real HTF candles for v2/v3 before evaluating — previously
+    // omitted entirely, so "HTF bias" was always computed from these same
+    // execution-timeframe candles.
+    const engineName = getActiveStrategyEngineName();
+    const htfCandles = await getHTFCandlesIfNeeded(symbol, engineName, tf);
+
     const result = await getActiveStrategyEngine().evaluateCoin(
-      symbol, coinData[symbol].candles, settingsRef, openTrades, autoTradePaused
+      symbol, coinData[symbol].candles, settingsRef, openTrades, autoTradePaused, htfCandles
     );
     if (!result) return;
 
@@ -393,6 +431,16 @@ async function onPriceTick(symbol, price) {
           candleData.candles.map(c => c.close), 14)
       : trade.atrAtEntry;
 
+    // FIX 2: breakeven lock now runs for EVERY engine, before the TP/SL checks
+    // below. This is what protects a trade that gets partway to TP1 and then
+    // reverses — previously nothing did, for either v1 or v2/v3.
+    const lockedBE = tradeManager.checkBreakevenLock(trade, price);
+    if (lockedBE) {
+      await storage.saveTrade(trade);
+      broadcastFn('TRADE_UPDATE', trade);
+      await telegram.sendStopTightenedAlert(trade, trade.stopLoss);
+    }
+
     if ((trade.strategyEngine || 'v1') === 'v1') {
       // v1: owns its full fixed TP1/TP2/TP3 ladder + trailing stop
       const action = tradeManager.checkTPSL(trade, price);
@@ -408,16 +456,23 @@ async function onPriceTick(symbol, price) {
         }
       }
     } else {
-      // v2/v3: no fixed TP ladder — their own watchdog signal (checked on candle close)
-      // is the real exit. Here we only enforce the strategy's own entry-computed SL
-      // as a hard safety floor in case price gaps through it between candle closes.
-      const slHit = trade.direction === 'LONG' ? price <= trade.stopLoss : price >= trade.stopLoss;
-      if (slHit) {
-        let pnl = ((price - trade.entryPrice) / trade.entryPrice) * trade.positionValue * trade.leverage * trade.remainingPct;
-        if (trade.direction === 'SHORT') pnl = ((trade.entryPrice - price) / trade.entryPrice) * trade.positionValue * trade.leverage * trade.remainingPct;
-        trade.realizedPnL += pnl;
-        await finishCloseTrade(trade, trade.stopLoss, 'SL');
+      // v2/v3: FIX 2 (cont.) — previously this branch only checked the static
+      // entry SL and never used the strategy's own tp1/tp2/tp3/trailing at all.
+      // It now runs through the same TP ladder + trailing pipeline as v1,
+      // IN ADDITION TO the watchdog check (handled separately on candle close
+      // in onCandleClose, which can still close the trade earlier on a
+      // confirmed reversal signal).
+      const action = tradeManager.checkTPSL(trade, price);
+      if (action) {
+        await processTPSLAction(trade, action.action, action.closePrice);
         continue;
+      } else if (trade.trailingActive && currentATR) {
+        const moved = tradeManager.updateTrailingStop(trade, price, currentATR);
+        if (moved) {
+          const tradesObj = await storage.loadTrades();
+          await storage.saveTrades(tradesObj);
+          await telegram.sendTrailingMovedAlert(trade, trade.trailingStop);
+        }
       }
     }
 
@@ -606,6 +661,7 @@ async function runFullAutoScan() {
   console.log(`[AUTO-SCAN] ⚡ Starting full market scan — ${activeCoinList.length} coins @ TF:${tf}`);
 
   let errorCount = 0;
+  const engineName = getActiveStrategyEngineName();
 
   try {
     const batchSize = 5;
@@ -620,8 +676,10 @@ async function runFullAutoScan() {
           }
 
           if (coinData[symbol]?.candles?.length >= 50) {
+            // FIX 1: fetch real HTF candles for v2/v3 before evaluating.
+            const htfCandles = await getHTFCandlesIfNeeded(symbol, engineName, tf);
             const evalResult = await getActiveStrategyEngine().evaluateCoin(
-              symbol, coinData[symbol].candles, settingsRef, openTrades, autoTradePaused
+              symbol, coinData[symbol].candles, settingsRef, openTrades, autoTradePaused, htfCandles
             );
             if (evalResult) {
               logGateEvaluation(symbol, evalResult, Date.now());
