@@ -131,6 +131,10 @@ function handleBackendMessage(msg) {
     case 'GUARD_STATE_CHANGED':  handleGuardStateChanged(msg.data); break;
     case 'GUARD_BLOCKED':        handleGuardBlocked(msg.data); break;
     case 'PRICE_FEED_CHANGED':   handlePriceFeedChanged(msg.data); break;
+    // FIX: scanner.js broadcasts this on a v2/v3 watchdog exit — previously
+    // silently dropped since no case handled it (the Telegram alert still
+    // worked; only this on-screen notification was missing).
+    case 'WATCHDOG_ALERT':       handleWatchdogAlert(msg.data); break;
     default:
       // silently ignore unknown types
   }
@@ -537,8 +541,10 @@ function handleTradeUpdate(update) {
     const livePrice = update.currentPrice || currentPrices[trade.symbol] || trade.currentPrice || trade.entryPrice;
     recalculateTradePnL(trade, livePrice);
     const trailingEl = document.getElementById('trailing-' + trade.id);
-    if (trailingEl && update.trailingActive)
-      trailingEl.textContent = '🔒 Active at $' + formatPrice(update.trailingStop);
+    if (trailingEl) {
+      if (update.trailingActive) trailingEl.textContent = '🔒 Active at $' + formatPrice(update.trailingStop);
+      else if (update.breakevenLocked) trailingEl.textContent = '🟡 Breakeven locked — can\'t close in loss';
+    }
     updateTopBarTotalPnL();
   }
 }
@@ -614,7 +620,11 @@ function createTradeCard(trade) {
       <span class="level-tp3">TP3: $${formatPrice(trade.tp3)}</span>
     </div>
     <div class="trade-trailing">
-      Trailing: <span id="trailing-${trade.id}">${trade.trailingActive?'🔒 Active at $'+formatPrice(trade.trailingStop):'Activates after TP1'}</span>
+      Trailing: <span id="trailing-${trade.id}">${
+        trade.trailingActive ? '🔒 Active at $' + formatPrice(trade.trailingStop)
+        : trade.breakevenLocked ? '🟡 Breakeven locked — can\'t close in loss'
+        : 'Not yet — protects at 50% to TP1'
+      }</span>
     </div>
     <div class="trade-meta">
       <span>Score at entry: ${trade.scoreAtEntry}/100</span>
@@ -1022,6 +1032,17 @@ function setupSettingsHandlers() {
         telegram: {
           botToken: document.getElementById('set-tgtoken')?.value,
           chatId:   document.getElementById('set-tgchatid')?.value
+        },
+        // FIX: previously had no UI — these now reach scanner.js's
+        // getScannerBroadcastThrottleMs/getTradeBroadcastThrottleMs directly.
+        bandwidth: {
+          quietHoursEnabled: document.getElementById('set-quiet-enabled')?.checked ?? true,
+          quietHoursStartIST: parseInt(document.getElementById('set-quiet-start')?.value ?? 1),
+          quietHoursEndIST:   parseInt(document.getElementById('set-quiet-end')?.value ?? 9),
+          activeScannerMs:    parseInt(document.getElementById('set-active-scanner-ms')?.value ?? 15000),
+          quietHourScannerMs: parseInt(document.getElementById('set-quiet-scanner-ms')?.value ?? 60000),
+          activeTradeMs:      parseInt(document.getElementById('set-active-trade-ms')?.value ?? 2000),
+          quietHourTradeMs:   parseInt(document.getElementById('set-quiet-trade-ms')?.value ?? 60000)
         }
       };
       sendToBackend('UPDATE_SETTINGS', payload);
@@ -1206,6 +1227,17 @@ function showToast(message, type = 'info', duration = 5000) {
 
 function showAlert(data) { showToast(data.message || 'Alert', data.level || 'info'); }
 
+// FIX: new handler for the watchdog exit event (see WATCHDOG_ALERT case above).
+function handleWatchdogAlert(alert) {
+  if (!alert) return;
+  showToast(`🐕 ${alert.message || 'Watchdog reversal exit'}`, alert.currentlyInProfit ? 'success' : 'error', 7000);
+  const card = document.getElementById('card-' + alert.positionId);
+  if (card) {
+    card.classList.add('signal-row-flash');
+    setTimeout(() => card.classList.remove('signal-row-flash'), 2000);
+  }
+}
+
 function handleWMStateChange(data) {
   const coin = scannerCoins.find(c => c.symbol === data.symbol);
   if (coin) { coin.wmState = data.state; coin.wmType = data.type; updateScannerRow(coin); }
@@ -1312,6 +1344,17 @@ function populateSettingsForm() {
     set('set-tgtoken',  appSettings.telegram.botToken);
     set('set-tgchatid', appSettings.telegram.chatId);
   }
+  // FIX: bandwidth quiet-hours settings had no form fields to populate from —
+  // added here to match the new #settings-bandwidth-card fields below.
+  const bw = appSettings.bandwidth || {};
+  const bwEnabledEl = document.getElementById('set-quiet-enabled');
+  if (bwEnabledEl) bwEnabledEl.checked = bw.quietHoursEnabled !== false;
+  set('set-quiet-start',       bw.quietHoursStartIST ?? 1);
+  set('set-quiet-end',         bw.quietHoursEndIST ?? 9);
+  set('set-active-scanner-ms', bw.activeScannerMs ?? 15000);
+  set('set-quiet-scanner-ms',  bw.quietHourScannerMs ?? 60000);
+  set('set-active-trade-ms',   bw.activeTradeMs ?? 2000);
+  set('set-quiet-trade-ms',    bw.quietHourTradeMs ?? 60000);
   // Highlight active preset
   document.querySelectorAll('.preset-card').forEach(c => {
     c.classList.toggle('preset-active', c.dataset.presetId === appSettings.activePreset);
