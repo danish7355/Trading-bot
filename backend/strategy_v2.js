@@ -419,8 +419,7 @@ async function evaluateCoin(symbol, candles, settings, openTrades = [], autoTrad
   const i      = closes.length - 1;
   const currentPrice = closes[i];
 
-  const atrArr = indicators.calculateATR(highs, lows, closes, 14);
-  const atrVal = atrArr[i] || (currentPrice * 0.02);
+  const atrVal = indicators.calculateATR(highs, lows, closes, 14) || (currentPrice * 0.02);
 
   // 1. HTF Bias
   const bias = getHTFBias(htfCandles || candles, profile.swingLookback);
