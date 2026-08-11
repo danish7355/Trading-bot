@@ -489,7 +489,7 @@ function calculateScore(ind, direction, wmState, settings) {
 
 function buildSignalObject(symbol, direction, candles, ema9, ema55, ema200,
                            rsiArr, adxResult, volumeRatio, scoreObj, trigger,
-                           gates, wmResult) {
+                           gates, wmResult, settings = {}) {
   const i = candles.length - 1;
   const now = Date.now();
 
@@ -501,8 +501,8 @@ function buildSignalObject(symbol, direction, candles, ema9, ema55, ema200,
     signalCandleCloseDateTimeUTC: formatUTCDateTime(candles[i].closeTime),
     symbol,
     market:   'crypto',
-    timeframe: '4h',
-    exchange: 'binance',
+    timeframe: settings.timeframe || '4h',
+    exchange: settings.exchange || 'binance',
     direction,
     trigger,
     signalCandleClose: candles[i].close,
@@ -639,7 +639,7 @@ async function evaluateCoin(symbol, candles, settings, openTrades = [], autoTrad
     };
     Object.assign(gates, evaluateGateSystem(gates));
     const signal = buildSignalObject(symbol, wmDir, candles, ema9, ema55, ema200,
-      rsiArr, adxResult, currentVolRatio, score, 'WM_FORMATION', gates, wmResult);
+      rsiArr, adxResult, currentVolRatio, score, 'WM_FORMATION', gates, wmResult, settings);
 
     // BUG 2 FIX: same safety guards as 4GATE_TRADE
     if (hasOpenTrade(symbol, openTrades)) return { action: 'BLOCKED', reason: 'Trade already open', score };
@@ -679,7 +679,7 @@ async function evaluateCoin(symbol, candles, settings, openTrades = [], autoTrad
     const firstFail = [g1,g2,g3,g4,g5,g6,g7].findIndex(g => !g.pass) + 1;
     const failedGate = [g1,g2,g3,g4,g5,g6,g7][firstFail - 1];
     const signal = buildSignalObject(symbol, direction, candles, ema9, ema55, ema200,
-      rsiArr, adxResult, currentVolRatio, score, '10-GATE', gates, null);
+      rsiArr, adxResult, currentVolRatio, score, '10-GATE', gates, null, settings);
     return {
       action: 'GATE_FAIL', failedGate: firstFail, reason: failedGate.reason,
       signal, score, isRanging: firstFail === 3 && !g3.pass,
@@ -690,7 +690,7 @@ async function evaluateCoin(symbol, candles, settings, openTrades = [], autoTrad
   // Confirmation gates: need 2 of 3
   if (!gates.confirmationPassed) {
     const signal = buildSignalObject(symbol, direction, candles, ema9, ema55, ema200,
-      rsiArr, adxResult, currentVolRatio, score, '10-GATE', gates, null);
+      rsiArr, adxResult, currentVolRatio, score, '10-GATE', gates, null, settings);
     return {
       action: 'GATE_FAIL', failedGate: 'CONFIRMATION',
       reason: `Only ${gates.confirmationCount}/3 confirmation gates passed (need 2)`,
@@ -704,7 +704,7 @@ async function evaluateCoin(symbol, candles, settings, openTrades = [], autoTrad
   if (autoTradePaused) return { action: 'BLOCKED', reason: 'Auto-trading paused (daily limit)', score };
 
   const signal = buildSignalObject(symbol, direction, candles, ema9, ema55, ema200,
-    rsiArr, adxResult, currentVolRatio, score, '10-GATE', gates, null);
+    rsiArr, adxResult, currentVolRatio, score, '10-GATE', gates, null, settings);
   return { action: '10GATE_TRADE', signal, direction, score, atr, fib, indicators: indObj, gates };
 }
 

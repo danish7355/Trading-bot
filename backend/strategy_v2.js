@@ -385,10 +385,14 @@ function watchdogCheck(position, candles) {
   if (direction === 'SHORT' && div.bullish) signals.push('DIVERGENCE');
 
   const lastClose = closes[closes.length - 1];
-  if (direction === 'LONG' && position.stopLoss && lastClose < position.entryPrice - (Math.abs(position.entryPrice - position.stopLoss) * 0.5)) {
+  // Use ATR-based floor to prevent trivial triggering after SL moves to breakeven
+  const slDistance = Math.abs(position.entryPrice - position.stopLoss);
+  const atrFloor = (position.atrAtEntry || position.entryPrice * 0.015) * 0.75;
+  const zoneDistance = Math.max(slDistance, atrFloor) * 0.5;
+  if (direction === 'LONG' && lastClose < position.entryPrice - zoneDistance) {
     signals.push('ZONE_BREAK');
   }
-  if (direction === 'SHORT' && position.stopLoss && lastClose > position.entryPrice + (Math.abs(position.entryPrice - position.stopLoss) * 0.5)) {
+  if (direction === 'SHORT' && lastClose > position.entryPrice + zoneDistance) {
     signals.push('ZONE_BREAK');
   }
 
