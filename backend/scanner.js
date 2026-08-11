@@ -492,12 +492,17 @@ async function onPriceTick(symbol, price) {
 async function processTPSLAction(trade, action, closePrice) {
   const currentATR = trade.atrAtEntry || 100;
 
+  // Helper: direction-aware PnL for a given fraction of positionValue
+  const calcPnl = (fraction) => {
+    const base = (trade.direction === 'LONG')
+      ? ((closePrice - trade.entryPrice) / trade.entryPrice)
+      : ((trade.entryPrice - closePrice) / trade.entryPrice);
+    return base * trade.positionValue * trade.leverage * fraction;
+  };
+
   if (action === 'TP1_HIT') {
-    const closePct = (settingsRef.trade?.tp1ClosePct || 40) / 100;
-    let pnl = ((closePrice - trade.entryPrice) / trade.entryPrice) * trade.positionValue * trade.leverage * closePct;
-    if (trade.direction === 'SHORT') {
-      pnl = ((trade.entryPrice - closePrice) / trade.entryPrice) * trade.positionValue * trade.leverage * closePct;
-    }
+    const closePct = Math.min((settingsRef.trade?.tp1ClosePct || 40) / 100, trade.remainingPct);
+    const pnl = calcPnl(closePct);
     trade.tp1Hit = true;
     trade.realizedPnL += pnl;
     trade.remainingPct -= closePct;
@@ -518,14 +523,23 @@ async function processTPSLAction(trade, action, closePrice) {
     await telegram.sendTPAlert(trade, 1, closePrice, pnl);
 
   } else if (action === 'TP2_HIT') {
-    const closePct = (settingsRef.trade?.tp2ClosePct || 40) / 100;
-    let pnl = ((closePrice - trade.entryPrice) / trade.entryPrice) * trade.positionValue * trade.leverage * closePct;
-    if (trade.direction === 'SHORT') {
-      pnl = ((trade.entryPrice - closePrice) / trade.entryPrice) * trade.positionValue * trade.leverage * closePct;
-    }
+    const closePct = Math.min((settingsRef.trade?.tp2ClosePct || 40) / 100, trade.remainingPct);
+    const pnl = calcPnl(closePct);
     trade.tp2Hit = true;
     trade.realizedPnL += pnl;
     trade.remainingPct -= closePct;
+
+    // Ratchet trailing stop tighter after TP2 — the remaining ~20% should be
+    // protected at least at the TP1 level, not the original trailing distance.
+    if (trade.direction === 'LONG') {
+      const newTrailing = Math.max(closePrice - (currentATR * 0.5), trade.trailingStop || 0);
+      trade.trailingStop = newTrailing;
+      trade.stopLoss     = Math.max(trade.stopLoss || 0, newTrailing);
+    } else {
+      const newTrailing = Math.min(closePrice + (currentATR * 0.5), trade.trailingStop || Infinity);
+      trade.trailingStop = newTrailing;
+      trade.stopLoss     = Math.min(trade.stopLoss || Infinity, newTrailing);
+    }
 
     await storage.saveTrade(trade);
     tradeLogger.onTPHit(trade, 2);
@@ -533,26 +547,17 @@ async function processTPSLAction(trade, action, closePrice) {
     await telegram.sendTPAlert(trade, 2, closePrice, pnl);
 
   } else if (action === 'TP3_HIT') {
-    let pnl = ((closePrice - trade.entryPrice) / trade.entryPrice) * trade.positionValue * trade.leverage * trade.remainingPct;
-    if (trade.direction === 'SHORT') {
-      pnl = ((trade.entryPrice - closePrice) / trade.entryPrice) * trade.positionValue * trade.leverage * trade.remainingPct;
-    }
+    const pnl = calcPnl(trade.remainingPct);
     trade.realizedPnL += pnl;
     await finishCloseTrade(trade, closePrice, 'TP3');
 
   } else if (action === 'SL_HIT') {
-    let pnl = ((closePrice - trade.entryPrice) / trade.entryPrice) * trade.positionValue * trade.leverage * trade.remainingPct;
-    if (trade.direction === 'SHORT') {
-      pnl = ((trade.entryPrice - closePrice) / trade.entryPrice) * trade.positionValue * trade.leverage * trade.remainingPct;
-    }
+    const pnl = calcPnl(trade.remainingPct);
     trade.realizedPnL += pnl;
     await finishCloseTrade(trade, closePrice, 'SL');
 
   } else if (action === 'TRAILING_HIT') {
-    let pnl = ((closePrice - trade.entryPrice) / trade.entryPrice) * trade.positionValue * trade.leverage * trade.remainingPct;
-    if (trade.direction === 'SHORT') {
-      pnl = ((trade.entryPrice - closePrice) / trade.entryPrice) * trade.positionValue * trade.leverage * trade.remainingPct;
-    }
+    const pnl = calcPnl(trade.remainingPct);
     trade.realizedPnL += pnl;
     await finishCloseTrade(trade, closePrice, 'TRAILING');
   }
