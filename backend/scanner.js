@@ -30,17 +30,36 @@ function getActiveStrategyEngine() { return getEngineByName(getActiveStrategyEng
  *          engines, closing the gap where a trade could run deep into profit
  *          before TP1 and give it all back with nothing protecting it.
  */
+// FIX (bandwidth): HTF candles were being refetched on every scan cycle and
+// every candle close — a real cost on a 5GB/month free bandwidth cap. They
+// only meaningfully change every few hours, so cache them and only refetch
+// once the cache goes stale.
+const htfCandleCache = {}; // key: `${symbol}|${htfTf}` -> { candles, fetchedAt }
+const HTF_CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes
+
 async function getHTFCandlesIfNeeded(symbol, engineName, tf) {
   if (engineName !== 'v2' && engineName !== 'v3') return null;
   try {
     const profile = strategyV2.getProfile(tf);
     const htfTf = profile?.htf;
     if (!htfTf) return null;
+
+    const cacheKey = `${symbol}|${htfTf}`;
+    const cached = htfCandleCache[cacheKey];
+    if (cached && (Date.now() - cached.fetchedAt) < HTF_CACHE_TTL_MS) {
+      return cached.candles;
+    }
+
     const htfCandles = await binanceData.getCandles(symbol, htfTf, 150);
-    return (htfCandles && htfCandles.length > 0) ? htfCandles : null;
+    if (htfCandles && htfCandles.length > 0) {
+      htfCandleCache[cacheKey] = { candles: htfCandles, fetchedAt: Date.now() };
+      return htfCandles;
+    }
+    return cached ? cached.candles : null; // fetch failed — serve stale cache rather than nothing
   } catch (err) {
-    console.warn(`[HTF_FETCH] ${symbol}: failed to fetch ${tf}'s HTF candles — falling back to no HTF data this cycle:`, err.message);
-    return null;
+    console.warn(`[HTF_FETCH] ${symbol}: failed to fetch ${tf}'s HTF candles:`, err.message);
+    const cached = htfCandleCache[`${symbol}|${tf}`];
+    return cached ? cached.candles : null;
   }
 }
 
@@ -411,6 +430,36 @@ function confirmWMTrade(signalId){ delete wmSkippedMap[signalId]; }
 
 const latestPrices = {};
 
+// FIX (bandwidth): implements user-adjustable "quiet hours" — during low-
+// activity hours (default 1am–9am IST), both the dashboard refresh and
+// per-trade update broadcasts drop to a much slower interval. Outside quiet
+// hours, behavior matches the earlier throttle (15s / 2s). All four numbers
+// are meant to be exposed in a frontend settings panel under `settings.bandwidth`.
+function isQuietHour(settings) {
+  const bw = settings.bandwidth || {};
+  if (bw.quietHoursEnabled === false) return false; // enabled by default unless explicitly turned off
+  const startHour = bw.quietHoursStartIST ?? 1;
+  const endHour   = bw.quietHoursEndIST ?? 9;
+  const istOffsetMs = (5 * 60 + 30) * 60 * 1000;
+  const istNow = new Date(Date.now() + istOffsetMs);
+  const hour = istNow.getUTCHours();
+  return startHour <= endHour
+    ? (hour >= startHour && hour < endHour)
+    : (hour >= startHour || hour < endHour); // handles a range that wraps past midnight
+}
+
+function getScannerBroadcastThrottleMs(settings) {
+  const bw = settings.bandwidth || {};
+  return isQuietHour(settings) ? (bw.quietHourScannerMs ?? 60000) : (bw.activeScannerMs ?? 15000);
+}
+
+function getTradeBroadcastThrottleMs(settings) {
+  const bw = settings.bandwidth || {};
+  return isQuietHour(settings) ? (bw.quietHourTradeMs ?? 60000) : (bw.activeTradeMs ?? 2000);
+}
+
+const lastTradeBroadcast = {}; // tradeId -> timestamp
+
 async function onPriceTick(symbol, price) {
   if (!symbol || !price || isNaN(price)) return;
 
@@ -431,14 +480,18 @@ async function onPriceTick(symbol, price) {
           candleData.candles.map(c => c.close), 14)
       : trade.atrAtEntry;
 
-    // FIX 2: breakeven lock now runs for EVERY engine, before the TP/SL checks
-    // below. This is what protects a trade that gets partway to TP1 and then
-    // reverses — previously nothing did, for either v1 or v2/v3.
-    const lockedBE = tradeManager.checkBreakevenLock(trade, price);
-    if (lockedBE) {
-      await storage.saveTrade(trade);
-      broadcastFn('TRADE_UPDATE', trade);
-      await telegram.sendStopTightenedAlert(trade, trade.stopLoss);
+    // FIX (v3.5-aligned): breakeven lock now runs ONLY for v1 trades. v2/v3
+    // SL/TP are purely level-based and fixed at trade creation with NO
+    // post-entry adjustment of any kind — that's the whole point of the
+    // "purely technical, no trailing" rework in strategy_v2.js/v3.js. v1's
+    // existing ladder+trailing design is untouched and still gets this.
+    if ((trade.strategyEngine || 'v1') === 'v1') {
+      const lockedBE = tradeManager.checkBreakevenLock(trade, price);
+      if (lockedBE) {
+        await storage.saveTrade(trade);
+        broadcastFn('TRADE_UPDATE', trade);
+        await telegram.sendStopTightenedAlert(trade, trade.stopLoss);
+      }
     }
 
     if ((trade.strategyEngine || 'v1') === 'v1') {
@@ -456,53 +509,48 @@ async function onPriceTick(symbol, price) {
         }
       }
     } else {
-      // v2/v3: FIX 2 (cont.) — previously this branch only checked the static
-      // entry SL and never used the strategy's own tp1/tp2/tp3/trailing at all.
-      // It now runs through the same TP ladder + trailing pipeline as v1,
-      // IN ADDITION TO the watchdog check (handled separately on candle close
-      // in onCandleClose, which can still close the trade earlier on a
-      // confirmed reversal signal).
+      // v2/v3: FIX — SL is now level-based and fixed at entry (see
+      // strategy_v2.js's findNearestRiskLevel), not ATR-distance based, so it
+      // no longer needs ongoing ATR re-trailing to "fix" a loosely-placed
+      // stop. checkTPSL still runs the TP1/TP2/TP3 ladder (partial exits) and
+      // the breakeven lock above still protects a trade that gets partway to
+      // TP1 — but updateTrailingStop (continuous ATR chandelier trail) no
+      // longer runs for this engine. The watchdog (onCandleClose) remains the
+      // reversal-based exit on top of this fixed SL.
       const action = tradeManager.checkTPSL(trade, price);
       if (action) {
         await processTPSLAction(trade, action.action, action.closePrice);
         continue;
-      } else if (trade.trailingActive && currentATR) {
-        const moved = tradeManager.updateTrailingStop(trade, price, currentATR);
-        if (moved) {
-          const tradesObj = await storage.loadTrades();
-          await storage.saveTrades(tradesObj);
-          await telegram.sendTrailingMovedAlert(trade, trade.trailingStop);
-        }
       }
     }
 
     const pnlCalc = tradeManager.calculateLivePnL(trade, price);
     trade.unrealizedPnL = pnlCalc.unrealizedPnL;
 
-    broadcastFn('TRADE_UPDATE', {
-      tradeId: trade.id, symbol: trade.symbol,
-      currentPrice: price,
-      unrealizedPnL: pnlCalc.unrealizedPnL, pnlPct: pnlCalc.pnlPct,
-      trailingStop: trade.trailingStop, trailingActive: trade.trailingActive,
-      remainingPct: trade.remainingPct, tp1Hit: trade.tp1Hit, tp2Hit: trade.tp2Hit
-    });
+    const nowMs = Date.now();
+    const lastSent = lastTradeBroadcast[trade.id] || 0;
+    if (nowMs - lastSent >= getTradeBroadcastThrottleMs(settingsRef)) {
+      lastTradeBroadcast[trade.id] = nowMs;
+      broadcastFn('TRADE_UPDATE', {
+        tradeId: trade.id, symbol: trade.symbol,
+        currentPrice: price,
+        unrealizedPnL: pnlCalc.unrealizedPnL, pnlPct: pnlCalc.pnlPct,
+        trailingStop: trade.trailingStop, trailingActive: trade.trailingActive,
+        remainingPct: trade.remainingPct, tp1Hit: trade.tp1Hit, tp2Hit: trade.tp2Hit
+      });
+    }
   }
 }
 
 async function processTPSLAction(trade, action, closePrice) {
   const currentATR = trade.atrAtEntry || 100;
 
-  // Helper: direction-aware PnL for a given fraction of positionValue
-  const calcPnl = (fraction) => {
-    const base = (trade.direction === 'LONG')
-      ? ((closePrice - trade.entryPrice) / trade.entryPrice)
-      : ((trade.entryPrice - closePrice) / trade.entryPrice);
-    return base * trade.positionValue * trade.leverage * fraction;
-  };
-
   if (action === 'TP1_HIT') {
-    const closePct = Math.min((settingsRef.trade?.tp1ClosePct || 40) / 100, trade.remainingPct);
-    const pnl = calcPnl(closePct);
+    const closePct = (settingsRef.trade?.tp1ClosePct || 40) / 100;
+    let pnl = ((closePrice - trade.entryPrice) / trade.entryPrice) * trade.positionValue * trade.leverage * closePct;
+    if (trade.direction === 'SHORT') {
+      pnl = ((trade.entryPrice - closePrice) / trade.entryPrice) * trade.positionValue * trade.leverage * closePct;
+    }
     trade.tp1Hit = true;
     trade.realizedPnL += pnl;
     trade.remainingPct -= closePct;
@@ -523,23 +571,14 @@ async function processTPSLAction(trade, action, closePrice) {
     await telegram.sendTPAlert(trade, 1, closePrice, pnl);
 
   } else if (action === 'TP2_HIT') {
-    const closePct = Math.min((settingsRef.trade?.tp2ClosePct || 40) / 100, trade.remainingPct);
-    const pnl = calcPnl(closePct);
+    const closePct = (settingsRef.trade?.tp2ClosePct || 40) / 100;
+    let pnl = ((closePrice - trade.entryPrice) / trade.entryPrice) * trade.positionValue * trade.leverage * closePct;
+    if (trade.direction === 'SHORT') {
+      pnl = ((trade.entryPrice - closePrice) / trade.entryPrice) * trade.positionValue * trade.leverage * closePct;
+    }
     trade.tp2Hit = true;
     trade.realizedPnL += pnl;
     trade.remainingPct -= closePct;
-
-    // Ratchet trailing stop tighter after TP2 — the remaining ~20% should be
-    // protected at least at the TP1 level, not the original trailing distance.
-    if (trade.direction === 'LONG') {
-      const newTrailing = Math.max(closePrice - (currentATR * 0.5), trade.trailingStop || 0);
-      trade.trailingStop = newTrailing;
-      trade.stopLoss     = Math.max(trade.stopLoss || 0, newTrailing);
-    } else {
-      const newTrailing = Math.min(closePrice + (currentATR * 0.5), trade.trailingStop || Infinity);
-      trade.trailingStop = newTrailing;
-      trade.stopLoss     = Math.min(trade.stopLoss || Infinity, newTrailing);
-    }
 
     await storage.saveTrade(trade);
     tradeLogger.onTPHit(trade, 2);
@@ -547,17 +586,26 @@ async function processTPSLAction(trade, action, closePrice) {
     await telegram.sendTPAlert(trade, 2, closePrice, pnl);
 
   } else if (action === 'TP3_HIT') {
-    const pnl = calcPnl(trade.remainingPct);
+    let pnl = ((closePrice - trade.entryPrice) / trade.entryPrice) * trade.positionValue * trade.leverage * trade.remainingPct;
+    if (trade.direction === 'SHORT') {
+      pnl = ((trade.entryPrice - closePrice) / trade.entryPrice) * trade.positionValue * trade.leverage * trade.remainingPct;
+    }
     trade.realizedPnL += pnl;
     await finishCloseTrade(trade, closePrice, 'TP3');
 
   } else if (action === 'SL_HIT') {
-    const pnl = calcPnl(trade.remainingPct);
+    let pnl = ((closePrice - trade.entryPrice) / trade.entryPrice) * trade.positionValue * trade.leverage * trade.remainingPct;
+    if (trade.direction === 'SHORT') {
+      pnl = ((trade.entryPrice - closePrice) / trade.entryPrice) * trade.positionValue * trade.leverage * trade.remainingPct;
+    }
     trade.realizedPnL += pnl;
     await finishCloseTrade(trade, closePrice, 'SL');
 
   } else if (action === 'TRAILING_HIT') {
-    const pnl = calcPnl(trade.remainingPct);
+    let pnl = ((closePrice - trade.entryPrice) / trade.entryPrice) * trade.positionValue * trade.leverage * trade.remainingPct;
+    if (trade.direction === 'SHORT') {
+      pnl = ((trade.entryPrice - closePrice) / trade.entryPrice) * trade.positionValue * trade.leverage * trade.remainingPct;
+    }
     trade.realizedPnL += pnl;
     await finishCloseTrade(trade, closePrice, 'TRAILING');
   }
@@ -754,21 +802,33 @@ function start(coinList, settings, broadcastCallback) {
   exitManager.setSettings(settings);
   exitManager.setBroadcast(broadcastCallback || broadcastFn);
 
-  // 5-second fast periodic UI refresh
+  // FIX (bandwidth): checks every 5s internally (cheap, no bandwidth cost),
+  // but only actually broadcasts per the quiet-hours-aware throttle above —
+  // 15s by default during active hours, 60s by default 1am–9am IST. Adjust
+  // via settings.bandwidth.{quietHoursStartIST, quietHoursEndIST,
+  // activeScannerMs, quietHourScannerMs}.
+  let lastScannerBroadcastMs = 0;
   setInterval(async () => {
     try {
       recalculateScannerState();
-      broadcastFn('SCANNER_UPDATE', { coins: scannerState });
       for (const trade of openTrades) {
         trade.candlesOpen = calculateCandlesOpen(trade.openedAt, settingsRef.timeframe || '4h');
+      }
+      const nowMs = Date.now();
+      if (nowMs - lastScannerBroadcastMs >= getScannerBroadcastThrottleMs(settingsRef)) {
+        lastScannerBroadcastMs = nowMs;
+        broadcastFn('SCANNER_UPDATE', { coins: scannerState });
       }
     } catch (e) {
       console.error('[SCANNER REFRESH ERROR]', e.message);
     }
   }, 5000);
 
-  // 5-minute auto-scan
-  const scanIntervalMinutes = settingsRef.scanIntervalMinutes || 5;
+  // FIX: settings stored this as `scanInterval`, but this previously only
+  // read `scanIntervalMinutes` (never set anywhere) — so any interval you
+  // configured was silently ignored and this always ran every 5 minutes.
+  // Both keys are now checked.
+  const scanIntervalMinutes = settingsRef.scanIntervalMinutes || settingsRef.scanInterval || 5;
   const scanIntervalMs      = scanIntervalMinutes * 60 * 1000;
   console.log(`[AUTO-SCAN] Scheduled every ${scanIntervalMinutes} min`);
 

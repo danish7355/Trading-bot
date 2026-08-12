@@ -1,13 +1,20 @@
 /**
  * strategy_v2.js — Price Action / Smart Money Concepts (SMC) Strategy Engine
  *
- * v2.1 — Fixes applied against a live paper-trade audit (ENAUSDT BOS_CONTINUATION):
- *   FIX 1: TP3 now uses a real opposing structural level (nearest swing high/low
- *          beyond price) via the new findOpposingStructure(), instead of always
- *          silently falling back to a flat 4R extension.
- *   FIX 2: directionsToEvaluate no longer locks reversal-type triggers out of the
+ * v2.3 — cumulative fixes:
+ *   FIX 1: directionsToEvaluate no longer locks reversal-type triggers out of the
  *          opposite direction from HTF bias. Bias-agreement is now enforced only
  *          on BOS_CONTINUATION, where it actually belongs.
+ *   FIX 2 (new): SL and ALL THREE TP tiers are now purely level-based — nearest
+ *          daily pivot / daily fibonacci / swing support-resistance — with NO
+ *          risk:reward math anywhere (no R-multiples, no fib-extension-of-
+ *          impulse-leg). findOpposingStructure() is removed; findTargetLevels()
+ *          replaces it and returns up to 3 real levels for TP1/TP2/TP3. A setup
+ *          with no real nearby target is rejected outright rather than traded
+ *          with a synthetic target.
+ *   FIX 3 (new): no post-entry adjustment of SL or TP of any kind (see
+ *          scanner.js / tradeManager.js for the removed breakeven-lock call) —
+ *          every level is fixed once at trade creation.
  *   NOTE:   passesIntegrityFilters()'s spread check compares two settings values,
  *           not live order-book data — it isn't a real spread filter yet. Fixing
  *           that needs the exchange-data file, which wasn't provided.
@@ -297,61 +304,148 @@ function calculateConfidence(structuralScore, momentumScore, htfBiasStrength = 1
 // ── Step 7: Structural SL & TP Calculation ───────────────────────
 
 /**
- * FIX 1: this was previously never given a real opposingStructureLevel by
- * either evaluateCoin() in this file or in strategy_v3.js — both only
- * passed 5 of the 6 arguments, so TP3 always fell back to the flat
- * entryPrice +/- (r * 4.0) branch below, regardless of actual chart
- * structure. findOpposingStructure() (added below) now supplies a real
- * value, called from evaluateCoin() before this function runs.
+ * FIX (new): previously SL was purely ATR-distance-based off the trigger
+ * level — not tied to any real chart level, which is what made it look
+ * "random." These three functions build a fixed, level-based SL instead.
  */
-function findOpposingStructure(candles, direction, referencePrice, profile) {
-  const swings = detectSwings(candles, profile.swingLookback);
-  if (direction === 'LONG') {
-    const above = swings.highs
-      .filter(h => h.price > referencePrice)
-      .sort((a, b) => a.price - b.price);
-    return above.length > 0 ? above[0].price : null;
-  } else {
-    const below = swings.lows
-      .filter(l => l.price < referencePrice)
-      .sort((a, b) => b.price - a.price);
-    return below.length > 0 ? below[0].price : null;
+function computePreviousDayOHLC(candles) {
+  const dayMap = {};
+  for (const c of candles) {
+    const dayKey = new Date(c.closeTime).toISOString().slice(0, 10);
+    if (!dayMap[dayKey]) {
+      dayMap[dayKey] = { high: c.high, low: c.low, close: c.close, closeTime: c.closeTime };
+    } else {
+      dayMap[dayKey].high = Math.max(dayMap[dayKey].high, c.high);
+      dayMap[dayKey].low = Math.min(dayMap[dayKey].low, c.low);
+      dayMap[dayKey].close = c.close;
+      dayMap[dayKey].closeTime = c.closeTime;
+    }
   }
+  const days = Object.keys(dayMap).sort();
+  if (days.length < 2) return null;
+  return dayMap[days[days.length - 2]]; // most recently FULLY completed day
 }
 
-function calculateSLTP(direction, triggerLevel, entryPrice, atrPrice, impulseLeg = 0, opposingStructureLevel = null) {
-  const bufferMult = 0.25;
+function computeDailyPivots(prevDay) {
+  if (!prevDay) return null;
+  const { high, low, close } = prevDay;
+  const pp = (high + low + close) / 3;
+  return {
+    pp,
+    r1: 2 * pp - low, s1: 2 * pp - high,
+    r2: pp + (high - low), s2: pp - (high - low),
+    r3: high + 2 * (pp - low), s3: low - 2 * (high - pp)
+  };
+}
+
+function computeDailyFibLevels(prevDay) {
+  if (!prevDay) return null;
+  const { high, low } = prevDay;
+  const range = high - low;
+  return {
+    fib236: high - range * 0.236, fib382: high - range * 0.382,
+    fib500: high - range * 0.5,   fib618: high - range * 0.618,
+    fib786: high - range * 0.786
+  };
+}
+
+/** Nearest candidate level on the RISK side of entry (below for LONG, above
+ * for SHORT), pooling swing structure + daily pivots + daily fib levels.
+ * "Nearest" = tightest stop = smallest loss if the trade is wrong. */
+function findNearestRiskLevel(candles, direction, entryPrice, profile) {
+  const swings = detectSwings(candles, profile.swingLookback);
+  const prevDay = computePreviousDayOHLC(candles);
+  const pivots = computeDailyPivots(prevDay);
+  const fibs = computeDailyFibLevels(prevDay);
+
+  const candidates = [];
+  if (direction === 'LONG') {
+    swings.lows.forEach(l => { if (l.price < entryPrice) candidates.push(l.price); });
+    if (pivots) [pivots.pp, pivots.s1, pivots.s2, pivots.s3].forEach(v => { if (v < entryPrice) candidates.push(v); });
+    if (fibs) Object.values(fibs).forEach(v => { if (v < entryPrice) candidates.push(v); });
+  } else {
+    swings.highs.forEach(h => { if (h.price > entryPrice) candidates.push(h.price); });
+    if (pivots) [pivots.pp, pivots.r1, pivots.r2, pivots.r3].forEach(v => { if (v > entryPrice) candidates.push(v); });
+    if (fibs) Object.values(fibs).forEach(v => { if (v > entryPrice) candidates.push(v); });
+  }
+
+  if (candidates.length === 0) return null;
+  return direction === 'LONG' ? Math.max(...candidates) : Math.min(...candidates);
+}
+
+/** Nearest N candidate levels BEYOND entry in the trade's direction, same
+ * pool as findNearestRiskLevel (swing S/R + daily pivots + daily fib),
+ * filtered to a minimum meaningful distance and sorted by proximity. Used
+ * for TP1/TP2/TP3 — no risk:reward math involved, purely "next real level." */
+function findTargetLevels(candles, direction, referencePrice, profile, atrPrice, count = 3) {
+  const swings = detectSwings(candles, profile.swingLookback);
+  const prevDay = computePreviousDayOHLC(candles);
+  const pivots = computeDailyPivots(prevDay);
+  const fibs = computeDailyFibLevels(prevDay);
+
+  const candidates = [];
+  if (direction === 'LONG') {
+    swings.highs.forEach(h => { if (h.price > referencePrice) candidates.push(h.price); });
+    if (pivots) [pivots.pp, pivots.r1, pivots.r2, pivots.r3].forEach(v => { if (v > referencePrice) candidates.push(v); });
+    if (fibs) Object.values(fibs).forEach(v => { if (v > referencePrice) candidates.push(v); });
+  } else {
+    swings.lows.forEach(l => { if (l.price < referencePrice) candidates.push(l.price); });
+    if (pivots) [pivots.pp, pivots.s1, pivots.s2, pivots.s3].forEach(v => { if (v < referencePrice) candidates.push(v); });
+    if (fibs) Object.values(fibs).forEach(v => { if (v < referencePrice) candidates.push(v); });
+  }
+
+  const minGap = (atrPrice || 0) * 0.3; // reject trivially-close levels — not a real target
+  const filtered = candidates.filter(v => Math.abs(v - referencePrice) >= minGap);
+  const sorted = [...new Set(filtered)].sort((a, b) => direction === 'LONG' ? a - b : b - a);
+
+  const deduped = [];
+  for (const level of sorted) {
+    if (deduped.length === 0 || Math.abs(level - deduped[deduped.length - 1]) / referencePrice > 0.0005) {
+      deduped.push(level);
+    }
+    if (deduped.length >= count) break;
+  }
+  return deduped; // up to `count` levels, nearest first — may be shorter than `count`
+}
+
+/**
+ * FIX (purely technical rework): SL is level-based as before. TP1/TP2/TP3
+ * are now ALSO purely level-based — the nearest three real levels beyond
+ * entry — instead of R-multiples or a fib-extension-of-impulse-leg. No
+ * risk:reward math anywhere in this function anymore. A tier with no real
+ * level found is left null rather than synthesized.
+ */
+function calculateSLTP(direction, entryPrice, atrPrice, nearestRiskLevel = null, targetLevels = []) {
+  const bufferMult = 0.15;
+  const levelBasis = nearestRiskLevel !== null ? nearestRiskLevel : entryPrice;
   let sl = 0;
 
   if (direction === 'LONG') {
-    sl = (triggerLevel || entryPrice) - (atrPrice * bufferMult);
-    if (sl >= entryPrice) sl = entryPrice - (atrPrice * 1.5);
+    sl = levelBasis - (atrPrice * bufferMult);
+    if (sl >= entryPrice) sl = entryPrice - (atrPrice * 1.0);
   } else {
-    sl = (triggerLevel || entryPrice) + (atrPrice * bufferMult);
-    if (sl <= entryPrice) sl = entryPrice + (atrPrice * 1.5);
+    sl = levelBasis + (atrPrice * bufferMult);
+    if (sl <= entryPrice) sl = entryPrice + (atrPrice * 1.0);
   }
+
+  const minDist = atrPrice * 0.5;
+  const maxDist = atrPrice * 3.0;
+  const rawDist = Math.abs(entryPrice - sl);
+  if (rawDist < minDist) sl = direction === 'LONG' ? entryPrice - minDist : entryPrice + minDist;
+  else if (rawDist > maxDist) sl = direction === 'LONG' ? entryPrice - maxDist : entryPrice + maxDist;
+
+  const tpBuffer = atrPrice * 0.05; // small pullback from the exact level so the exit isn't sitting right on the wick
+  const [lvl1, lvl2, lvl3] = targetLevels;
+  const applyBuffer = (lvl) => lvl === undefined ? null : (direction === 'LONG' ? lvl - tpBuffer : lvl + tpBuffer);
+
+  const tp1 = applyBuffer(lvl1);
+  const tp2 = applyBuffer(lvl2);
+  const tp3 = applyBuffer(lvl3);
 
   const r = Math.abs(entryPrice - sl);
+  const rr = (tp2 !== null && r > 0) ? Math.round((Math.abs(tp2 - entryPrice) / r) * 100) / 100 : null; // informational only — never enforced as a gate
 
-  let tp1 = 0;
-  let tp2 = 0;
-  let tp3 = 0;
-
-  const leg = impulseLeg > 0 ? impulseLeg : r * 3.0;
-
-  if (direction === 'LONG') {
-    tp1 = entryPrice + r;
-    tp2 = entryPrice + (leg * 1.272);
-    tp3 = opposingStructureLevel && opposingStructureLevel > tp2 ? opposingStructureLevel : entryPrice + (r * 4.0);
-  } else {
-    tp1 = entryPrice - r;
-    tp2 = entryPrice - (leg * 1.272);
-    tp3 = opposingStructureLevel && opposingStructureLevel < tp2 ? opposingStructureLevel : entryPrice - (r * 4.0);
-  }
-
-  const rr = r > 0 ? Math.abs(tp2 - entryPrice) / r : 0;
-
-  return { sl, tp1, tp2, tp3, rr: Math.round(rr * 100) / 100 };
+  return { sl, tp1, tp2, tp3, rr };
 }
 
 // ── Step 8: Tiered Position Sizing ───────────────────────────────
@@ -385,14 +479,10 @@ function watchdogCheck(position, candles) {
   if (direction === 'SHORT' && div.bullish) signals.push('DIVERGENCE');
 
   const lastClose = closes[closes.length - 1];
-  // Use ATR-based floor to prevent trivial triggering after SL moves to breakeven
-  const slDistance = Math.abs(position.entryPrice - position.stopLoss);
-  const atrFloor = (position.atrAtEntry || position.entryPrice * 0.015) * 0.75;
-  const zoneDistance = Math.max(slDistance, atrFloor) * 0.5;
-  if (direction === 'LONG' && lastClose < position.entryPrice - zoneDistance) {
+  if (direction === 'LONG' && position.stopLoss && lastClose < position.entryPrice - (Math.abs(position.entryPrice - position.stopLoss) * 0.5)) {
     signals.push('ZONE_BREAK');
   }
-  if (direction === 'SHORT' && lastClose > position.entryPrice + zoneDistance) {
+  if (direction === 'SHORT' && position.stopLoss && lastClose > position.entryPrice + (Math.abs(position.entryPrice - position.stopLoss) * 0.5)) {
     signals.push('ZONE_BREAK');
   }
 
@@ -423,7 +513,8 @@ async function evaluateCoin(symbol, candles, settings, openTrades = [], autoTrad
   const i      = closes.length - 1;
   const currentPrice = closes[i];
 
-  const atrVal = indicators.calculateATR(highs, lows, closes, 14) || (currentPrice * 0.02);
+  const atrArr = indicators.calculateATR(highs, lows, closes, 14);
+  const atrVal = atrArr[i] || (currentPrice * 0.02);
 
   // 1. HTF Bias
   const bias = getHTFBias(htfCandles || candles, profile.swingLookback);
@@ -555,13 +646,21 @@ async function evaluateCoin(symbol, candles, settings, openTrades = [], autoTrad
     };
   }
 
-  // Calculate SL / TP
-  const triggerLevel = bestSetup.sweep?.level || bestSetup.ob?.low || currentPrice;
-  const impulseLeg = bestSetup.ob?.impulseMove || (atrVal * 3);
-  // FIX 1: compute a real opposing structure level and pass it through —
-  // previously omitted, which is why TP3 always used the flat fallback.
-  const opposingStructureLevel = findOpposingStructure(candles, bestSetup.direction, currentPrice, profile);
-  const slTp = calculateSLTP(bestSetup.direction, triggerLevel, currentPrice, atrVal, impulseLeg, opposingStructureLevel);
+  // Calculate SL / TP — purely level-based, no risk:reward math
+  const nearestRiskLevel = findNearestRiskLevel(candles, bestSetup.direction, currentPrice, profile);
+  const targetLevels = findTargetLevels(candles, bestSetup.direction, currentPrice, profile, atrVal, 3);
+  const slTp = calculateSLTP(bestSetup.direction, currentPrice, atrVal, nearestRiskLevel, targetLevels);
+
+  // FIX: no real nearby target = not a real opportunity — reject rather than
+  // take a trade with nothing genuine to aim at.
+  if (!slTp.tp1) {
+    return {
+      action: 'NO_SIGNAL',
+      reason: 'No real technical target level found within range — rejected',
+      score: scoreObj,
+      gates: gateSystemMock
+    };
+  }
 
   // Position Sizing Tier
   const sizeTier = sizeEntry(bestSetup.triggersFired.length, bestSetup.momentumScore);
@@ -638,7 +737,8 @@ module.exports = {
   momentumConfirmation,
   passesIntegrityFilters,
   calculateConfidence,
-  findOpposingStructure,
+  findNearestRiskLevel,
+  findTargetLevels,
   calculateSLTP,
   sizeEntry,
   watchdogCheck,
