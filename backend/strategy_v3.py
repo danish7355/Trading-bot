@@ -1,54 +1,48 @@
 /**
  * strategy_v3.js — Price Action / SMC + EMA5/Bollinger Confluence Strategy Engine
  *
- * v3.5 — this delivery adds the purely-technical SL/TP rework on top of v3.4:
+ * v3.2 — Fixes applied against a live paper-trade audit (ENAUSDT BOS_CONTINUATION):
+ *   FIX 1: directionsToEvaluate no longer locks reversal-type triggers out of the
+ *          opposite direction from HTF bias. Bias-agreement is now enforced only
+ *          on BOS_CONTINUATION, where it actually belongs.
+ *   FIX 2: EMA_BB_REVERSAL's "armed" (0.6-strength) case now actually requires
+ *          confirmEMABBReversal() to confirm within the grace window before being
+ *          credited — previously it was credited immediately on arming.
+ *   FIX 3: HTF bias fallback to execution-timeframe candles is now loud (warns)
+ *          and discounted in the confidence calculation instead of silent.
+ *   FIX 4 (new this round): TP3 now uses a real opposing structural level via
+ *          strategyV2.findOpposingStructure(), instead of always silently
+ *          falling back to a flat 4R extension — same root cause as the
+ *          strategy_v2.js fix, closed here too since this is the engine
+ *          that's actually live (SMC_V3_ trigger prefix).
  *
- * New this round:
- *   FIX 10: SL and ALL THREE TP tiers are now purely level-based (via
- *          strategyV2.findNearestRiskLevel / findTargetLevels) — no
- *          risk:reward math anywhere. A setup with no real nearby target is
- *          rejected outright. No post-entry adjustment of either — see
- *          scanner.js for the removed breakeven-lock call for this engine.
- *
- * From v3.4 (previously failed to save, applied here for the first time):
- *   FIX 5: assessMomentumRegime() — a hard gate run BEFORE any trigger is
- *          evaluated. Requires 2-of-3: ADX above threshold, Bollinger Band
- *          width at/above its own recent median (not squeezed), and EMA9/EMA55
- *          spread (ATR-normalized) exceeding a minimum in the trade's
- *          direction. A direction that fails this is skipped entirely — no
- *          trigger is even checked — so chop/range conditions never reach
- *          the entry logic at all.
- *   FIX 6: emaSignalGrace tightened (was 2-4 candles depending on timeframe,
- *          now 1-2) — the biggest source of late entries was waiting multiple
- *          extra candles for confirmation after a setup had already armed.
- *   FIX 7: confirmEMABBReversal() now accepts price closing NEAR EMA5 (within
- *          emaApproachAtrMult x ATR) as valid confirmation, not only a full
- *          crossing close.
- *
- * Carried from v3.1/v3.2:
- *   - directionsToEvaluate no longer locks reversal triggers to HTF bias only
- *   - EMA_BB_REVERSAL's armed case requires actual confirmation, not just arming
- *   - HTF bias fallback is loud and discounted when real HTF data isn't supplied
+ * Extends v2 with:
+ * 1. 4th Entry Trigger Family: EMA5 Trend-Health + Reversal Candle + Bollinger Extension (EMA_BB_REVERSAL)
+ * 2. Hard Regime Gate (bandWalkActive): Disqualifies EMA_BB_REVERSAL during strong trend "band walks"
+ * 3. Watchdog EMA5 Cross Detection (EMA5_CROSS)
+ * 4. Adaptive Trigger Weighting (recalibrateTriggerWeights) based on trade outcome history
  */
 
 const indicators = require('./indicators');
 const strategyV2 = require('./strategy_v2');
 const { generateUUID, formatUTCDateTime } = require('./utils');
 
-// ── Timeframe Profiles ────────────────────────────────────────────
+// ── Timeframe Profiles (Extends v2 with EMA/BB fields) ───────────
 
 const STRUCTURE_PROFILES = {
-  '1m':  { swingLookback: 5,  obValidityCandles: 40,  impulseAtrMult: 1.3, graceCandles: 2, htf: '5m',  emaFast: 5, bbLength: 20, bbStd: 2.0, dojiBodyMaxPct: 0.20, emaGapAtrMult: 0.35, emaSignalGrace: 1, emaApproachAtrMult: 0.15, minAdx: 30, minEmaFanAtr: 0.30 },
-  '5m':  { swingLookback: 7,  obValidityCandles: 60,  impulseAtrMult: 1.4, graceCandles: 2, htf: '15m', emaFast: 5, bbLength: 20, bbStd: 2.0, dojiBodyMaxPct: 0.20, emaGapAtrMult: 0.35, emaSignalGrace: 1, emaApproachAtrMult: 0.15, minAdx: 28, minEmaFanAtr: 0.30 },
-  '15m': { swingLookback: 8,  obValidityCandles: 80,  impulseAtrMult: 1.5, graceCandles: 2, htf: '1h',  emaFast: 5, bbLength: 20, bbStd: 2.0, dojiBodyMaxPct: 0.20, emaGapAtrMult: 0.35, emaSignalGrace: 1, emaApproachAtrMult: 0.15, minAdx: 27, minEmaFanAtr: 0.30 },
-  '1h':  { swingLookback: 10, obValidityCandles: 100, impulseAtrMult: 1.5, graceCandles: 3, htf: '4h',  emaFast: 5, bbLength: 20, bbStd: 2.0, dojiBodyMaxPct: 0.20, emaGapAtrMult: 0.35, emaSignalGrace: 1, emaApproachAtrMult: 0.15, minAdx: 25, minEmaFanAtr: 0.30 },
-  '4h':  { swingLookback: 10, obValidityCandles: 60,  impulseAtrMult: 1.6, graceCandles: 3, htf: '1d',  emaFast: 5, bbLength: 20, bbStd: 2.0, dojiBodyMaxPct: 0.20, emaGapAtrMult: 0.35, emaSignalGrace: 2, emaApproachAtrMult: 0.15, minAdx: 24, minEmaFanAtr: 0.25 },
-  '1d':  { swingLookback: 10, obValidityCandles: 40,  impulseAtrMult: 1.8, graceCandles: 4, htf: '1w',  emaFast: 5, bbLength: 20, bbStd: 2.0, dojiBodyMaxPct: 0.20, emaGapAtrMult: 0.35, emaSignalGrace: 2, emaApproachAtrMult: 0.15, minAdx: 22, minEmaFanAtr: 0.25 },
+  '1m':  { swingLookback: 5,  obValidityCandles: 40,  impulseAtrMult: 1.3, graceCandles: 2, htf: '5m',  emaFast: 5, bbLength: 20, bbStd: 2.0, dojiBodyMaxPct: 0.20, emaGapAtrMult: 0.35, emaSignalGrace: 2 },
+  '5m':  { swingLookback: 7,  obValidityCandles: 60,  impulseAtrMult: 1.4, graceCandles: 2, htf: '15m', emaFast: 5, bbLength: 20, bbStd: 2.0, dojiBodyMaxPct: 0.20, emaGapAtrMult: 0.35, emaSignalGrace: 2 },
+  '15m': { swingLookback: 8,  obValidityCandles: 80,  impulseAtrMult: 1.5, graceCandles: 2, htf: '1h',  emaFast: 5, bbLength: 20, bbStd: 2.0, dojiBodyMaxPct: 0.20, emaGapAtrMult: 0.35, emaSignalGrace: 2 },
+  '1h':  { swingLookback: 10, obValidityCandles: 100, impulseAtrMult: 1.5, graceCandles: 3, htf: '4h',  emaFast: 5, bbLength: 20, bbStd: 2.0, dojiBodyMaxPct: 0.20, emaGapAtrMult: 0.35, emaSignalGrace: 2 },
+  '4h':  { swingLookback: 10, obValidityCandles: 60,  impulseAtrMult: 1.6, graceCandles: 3, htf: '1d',  emaFast: 5, bbLength: 20, bbStd: 2.0, dojiBodyMaxPct: 0.20, emaGapAtrMult: 0.35, emaSignalGrace: 3 },
+  '1d':  { swingLookback: 10, obValidityCandles: 40,  impulseAtrMult: 1.8, graceCandles: 4, htf: '1w',  emaFast: 5, bbLength: 20, bbStd: 2.0, dojiBodyMaxPct: 0.20, emaGapAtrMult: 0.35, emaSignalGrace: 4 },
 };
 
 function getProfile(timeframe = '1h') {
   return STRUCTURE_PROFILES[timeframe] || STRUCTURE_PROFILES['1h'];
 }
+
+// ── Base Trigger Weights ──────────────────────────────────────────
 
 const BASE_TRIGGER_WEIGHTS = {
   'LIQUIDITY_SWEEP_REVERSAL': 0.30,
@@ -60,6 +54,8 @@ const BASE_TRIGGER_WEIGHTS = {
 
 let activeTriggerWeights = { ...BASE_TRIGGER_WEIGHTS };
 
+// ── Step 0: Extra Indicators ─────────────────────────────────────
+
 function calculateConfluenceIndicators(candles, profile) {
   const closes = candles.map(c => c.close);
   const ema5 = indicators.calculateEMA(closes, profile.emaFast || 5);
@@ -67,39 +63,7 @@ function calculateConfluenceIndicators(candles, profile) {
   return { ema5, bb };
 }
 
-function median(arr) {
-  if (!arr || arr.length === 0) return null;
-  const sorted = [...arr].sort((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
-  return sorted.length % 2 !== 0 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
-}
-
-function assessMomentumRegime(candles, direction, profile, adxVal, bb, ema9Arr, ema55Arr, atrVal) {
-  const i = candles.length - 1;
-  const votes = {};
-
-  votes.adx = adxVal !== null && adxVal !== undefined && adxVal >= (profile.minAdx || 22);
-
-  const bwAt = (idx) => (bb.upper[idx] !== null && bb.lower[idx] !== null && bb.middle[idx])
-    ? (bb.upper[idx] - bb.lower[idx]) / bb.middle[idx] : null;
-  const bwNow = bwAt(i);
-  const lookback = 20;
-  const bwHistory = [];
-  for (let k = Math.max(0, i - lookback); k < i; k++) {
-    const v = bwAt(k);
-    if (v !== null) bwHistory.push(v);
-  }
-  const bwMedian = median(bwHistory);
-  votes.bbExpansion = bwNow !== null && bwMedian !== null && bwNow >= bwMedian;
-
-  const emaSpread = (ema9Arr[i] !== null && ema55Arr[i] !== null && atrVal)
-    ? (ema9Arr[i] - ema55Arr[i]) / atrVal : null;
-  const minFan = profile.minEmaFanAtr || 0.3;
-  votes.emaFan = emaSpread !== null && (direction === 'LONG' ? emaSpread > minFan : emaSpread < -minFan);
-
-  const passCount = Object.values(votes).filter(Boolean).length;
-  return { qualifies: passCount >= 2, passCount, votes };
-}
+// ── Step 3b-ii: Regime Gate (band_walk_active) ──────────────────
 
 function bandWalkActive(candles, bbUpper, bbLower, lookback = 5) {
   if (!candles || candles.length < lookback) return false;
@@ -119,11 +83,21 @@ function bandWalkActive(candles, bbUpper, bbLower, lookback = 5) {
   return walkUpCount >= lookback - 1 || walkDownCount >= lookback - 1;
 }
 
+// ── Step 3b: EMA5 / Doji / Bollinger Extension Trigger ──────────
+
+/**
+ * FIX 2: previously this only inspected the LAST candle. If it was a fully
+ * detached doji at the band, it fired at strength 1.0 (unchanged below — that
+ * case was already self-contained and correct). If it was only "armed" (doji +
+ * band touch, not yet detached), it ALSO fired immediately at strength 0.6 —
+ * confirmEMABBReversal() was never consulted. Now the armed case searches the
+ * grace window and requires an actual EMA5-cross confirmation before firing.
+ */
 function detectEMABBReversal(candles, direction, profile, atrVal, atKeyLevel = false, bbObj = null, ema5Arr = null) {
   if (!atKeyLevel || !candles || candles.length < 20 || !atrVal) return null;
   const n = candles.length;
   const last = n - 1;
-  const grace = profile.emaSignalGrace || 1;
+  const grace = profile.emaSignalGrace || 2;
 
   const closes = candles.map(c => c.close);
   const ema5 = ema5Arr || indicators.calculateEMA(closes, profile.emaFast || 5);
@@ -148,17 +122,21 @@ function detectEMABBReversal(candles, direction, profile, atrVal, atKeyLevel = f
     return { isDetached };
   };
 
+  // Case 1 (unchanged): last candle alone is fully detached + doji + band touch —
+  // a self-contained signal, fires immediately.
   const lastArm = evalArm(last);
   if (lastArm && lastArm.isDetached) {
     return { type: 'EMA_BB_REVERSAL', strength: 1.0, armedAt: last };
   }
 
+  // Case 2 (fixed): search the grace window for a weaker "armed" candle and
+  // REQUIRE confirmEMABBReversal() to confirm before crediting it.
   const searchStart = Math.max(0, last - grace);
   for (let armIdx = searchStart; armIdx <= last; armIdx++) {
     const arm = evalArm(armIdx);
-    if (!arm || arm.isDetached) continue;
+    if (!arm || arm.isDetached) continue; // fully-detached case already handled above
     const armedTrigger = { armedAt: armIdx };
-    if (confirmEMABBReversal(candles, armedTrigger, direction, profile, ema5, atrVal)) {
+    if (confirmEMABBReversal(candles, armedTrigger, direction, profile, ema5)) {
       return { type: 'EMA_BB_REVERSAL', strength: 0.6, armedAt: armIdx };
     }
   }
@@ -166,23 +144,22 @@ function detectEMABBReversal(candles, direction, profile, atrVal, atKeyLevel = f
   return null;
 }
 
-function confirmEMABBReversal(candles, armedTrigger, direction, profile, ema5Arr = null, atrVal = null) {
+function confirmEMABBReversal(candles, armedTrigger, direction, profile, ema5Arr = null) {
   if (!armedTrigger || armedTrigger.armedAt === undefined) return false;
   const n = candles.length;
-  const grace = profile.emaSignalGrace || 1;
+  const grace = profile.emaSignalGrace || 2;
 
   const closes = candles.map(c => c.close);
   const ema5 = ema5Arr || indicators.calculateEMA(closes, profile.emaFast || 5);
-  const atr = atrVal || (candles[n - 1].high - candles[n - 1].low);
 
   for (let idx = armedTrigger.armedAt; idx < Math.min(n, armedTrigger.armedAt + grace + 1); idx++) {
-    if (ema5[idx] === null) continue;
-    const fullCross = direction === 'LONG' ? closes[idx] > ema5[idx] : closes[idx] < ema5[idx];
-    const nearEma = Math.abs(closes[idx] - ema5[idx]) <= (profile.emaApproachAtrMult ?? 0.15) * atr;
-    if (fullCross || nearEma) return true;
+    if (direction === 'LONG' && closes[idx] > ema5[idx]) return true;
+    if (direction === 'SHORT' && closes[idx] < ema5[idx]) return true;
   }
   return false;
 }
+
+// ── Weighted Structural Score ────────────────────────────────────
 
 function calculateStructuralScore(triggersFiredMap) {
   if (!triggersFiredMap || Object.keys(triggersFiredMap).length === 0) return 0;
@@ -193,6 +170,8 @@ function calculateStructuralScore(triggersFiredMap) {
   }
   return Math.min(1.0, sum);
 }
+
+// ── Watchdog EMA5 Cross Detection ────────────────────────────────
 
 function ema5CrossAgainst(candles, direction) {
   if (!candles || candles.length < 3) return false;
@@ -209,6 +188,7 @@ function ema5CrossAgainst(candles, direction) {
 function watchdogCheck(position, candles) {
   if (!position || !candles || candles.length < 20) return null;
 
+  // Combine v2 watchdog checks + EMA5_CROSS
   const v2Alert = strategyV2.watchdogCheck(position, candles);
   const signals = v2Alert ? [...v2Alert.signals] : [];
 
@@ -222,11 +202,13 @@ function watchdogCheck(position, candles) {
       positionId: position.id,
       signals,
       currentlyInProfit: unrealizedPnL > 0,
-      message: '⚠️ Reversal warning against ' + position.direction + ' on ' + position.symbol + ' — [' + signals.join(', ') + ']'
+      message: `⚠️ Reversal warning against ${position.direction} on ${position.symbol} — [${signals.join(', ')}]`
     };
   }
   return null;
 }
+
+// ── Step 11: Adaptive Trigger Weighting ──────────────────────────
 
 function recalibrateTriggerWeights(tradeLog = [], window = 200, maxShift = 0.05) {
   if (!tradeLog || tradeLog.length === 0) return { ...activeTriggerWeights };
@@ -248,6 +230,8 @@ function recalibrateTriggerWeights(tradeLog = [], window = 200, maxShift = 0.05)
   return updated;
 }
 
+// ── Main Entry Point: evaluateCoin (v3) ───────────────────────────
+
 async function evaluateCoin(symbol, candles, settings, openTrades = [], autoTradePaused = false, htfCandles = null) {
   if (!candles || candles.length < 50) return null;
 
@@ -264,38 +248,44 @@ async function evaluateCoin(symbol, candles, settings, openTrades = [], autoTrad
   const atrArr = indicators.calculateATR(highs, lows, closes, 14);
   const atrVal = atrArr[i] || (currentPrice * 0.02);
 
+  // Indicators: EMA5, Bollinger Bands
   const { ema5, bb } = calculateConfluenceIndicators(candles, profile);
 
-  const adxResult = indicators.calculateADX(highs, lows, closes, 14);
-  const ema9  = indicators.calculateEMA(closes, 9);
-  const ema55 = indicators.calculateEMA(closes, 55);
-  const ema200 = indicators.calculateEMA(closes, 200);
-
+  // 1. HTF Bias
+  // FIX 3: getHTFBias() silently used execution-timeframe candles whenever the
+  // caller didn't supply real higher-timeframe data, with no visibility into
+  // that degradation. Now it's loud, and the confidence formula discounts it.
   const usingRealHTF = !!(htfCandles && htfCandles.length > 0);
   if (!usingRealHTF) {
-    console.warn('[strategy_v3] ' + symbol + ': no HTF candles supplied — bias is being computed from ' + timeframe + ' candles, not true ' + profile.htf + ' structure.');
+    console.warn(
+      `[strategy_v3] ${symbol}: no HTF candles supplied — bias is being computed from ` +
+      `${timeframe} candles, not true ${profile.htf} structure. Pass real ${profile.htf} ` +
+      `candles to evaluateCoin() for an accurate HTF read.`
+    );
   }
   const bias = strategyV2.getHTFBias(htfCandles || candles, profile.swingLookback);
   const htfBiasStrength = !usingRealHTF ? 0.5 : (bias === 'RANGING' ? 0.5 : 1.0);
 
+  // 2. Swings
   const swings = strategyV2.detectSwings(candles, profile.swingLookback);
+
+  // 3. Regime Gate Check (bandWalkActive)
   const isWalkingBand = bandWalkActive(candles, bb.upper, bb.lower, 5);
 
+  // FIX 1: previously this locked evaluation to a single direction whenever bias
+  // wasn't RANGING, which made it structurally impossible for reversal-type
+  // triggers (LIQUIDITY_SWEEP_REVERSAL, EMA_BB_REVERSAL) to ever fire against
+  // the prevailing bias — even though catching a turn is their entire purpose.
+  // Both directions are now always evaluated; bias-agreement is enforced only
+  // on BOS_CONTINUATION below, where it actually belongs.
   const directionsToEvaluate = ['LONG', 'SHORT'];
 
   let bestSetup = null;
-  let regimeSkipReasons = [];
 
   for (const direction of directionsToEvaluate) {
-
-    const regime = assessMomentumRegime(candles, direction, profile, adxResult?.adx, bb, ema9, ema55, atrVal);
-    if (!regime.qualifies) {
-      regimeSkipReasons.push(direction + ': regime ' + regime.passCount + '/3 (adx:' + regime.votes.adx + ' bbExp:' + regime.votes.bbExpansion + ' emaFan:' + regime.votes.emaFan + ')');
-      continue;
-    }
-
     const triggersFiredMap = {};
 
+    // Trigger A: Liquidity Sweep (reversal-type — bias-independent by design)
     const swingTarget = direction === 'LONG'
       ? (swings.lows[swings.lows.length - 1]?.price || null)
       : (swings.highs[swings.highs.length - 1]?.price || null);
@@ -305,6 +295,7 @@ async function evaluateCoin(symbol, candles, settings, openTrades = [], autoTrad
       triggersFiredMap['LIQUIDITY_SWEEP_REVERSAL'] = 1.0;
     }
 
+    // Trigger B: Order Block Retest
     const ob = strategyV2.detectOrderBlock(candles, direction, profile, atrVal);
     let inObZone = false;
     if (ob) {
@@ -314,6 +305,7 @@ async function evaluateCoin(symbol, candles, settings, openTrades = [], autoTrad
       if (inObZone) triggersFiredMap['ORDER_BLOCK_RETEST'] = 1.0;
     }
 
+    // Trigger C: FVG Fill
     const fvg = strategyV2.detectFVG(candles, direction);
     if (fvg) {
       const inFvgZone = direction === 'LONG'
@@ -322,6 +314,11 @@ async function evaluateCoin(symbol, candles, settings, openTrades = [], autoTrad
       if (inFvgZone) triggersFiredMap['FVG_FILL'] = 1.0;
     }
 
+    // Trigger D: BOS Continuation
+    // FIX 1 (cont.): this is a continuation trigger — it should only count when
+    // it agrees with HTF bias. That agreement used to be enforced by the outer
+    // directionsToEvaluate lockout; now it's enforced explicitly, right here,
+    // instead of accidentally blocking every other trigger type too.
     const bosChoch = strategyV2.detectBOSChoCH(candles, bias);
     const biasAgrees =
       bias === 'RANGING' ||
@@ -331,6 +328,7 @@ async function evaluateCoin(symbol, candles, settings, openTrades = [], autoTrad
       triggersFiredMap['BOS_CONTINUATION'] = 1.0;
     }
 
+    // Trigger E: EMA5 / Doji / Bollinger Extension Trigger (Regime-Gated)
     const atKeyLevel = (sweep && sweep.confirmed) || inObZone || (fvg !== null);
     if (!isWalkingBand && atKeyLevel) {
       const emaBbTrig = detectEMABBReversal(candles, direction, profile, atrVal, true, bb, ema5);
@@ -341,40 +339,62 @@ async function evaluateCoin(symbol, candles, settings, openTrades = [], autoTrad
 
     if (Object.keys(triggersFiredMap).length === 0) continue;
 
+    // Structural Score
     const structuralScore = calculateStructuralScore(triggersFiredMap);
+
+    // Momentum Score
     const momentumScore = strategyV2.momentumConfirmation(candles, direction, profile.graceCandles);
+
+    // Confidence Score
     const confidence = strategyV2.calculateConfidence(structuralScore, momentumScore, htfBiasStrength);
+
     const confThreshold = settings.confidence_threshold || 0.55;
 
     if (confidence >= confThreshold) {
       if (!bestSetup || confidence > bestSetup.confidence) {
         bestSetup = {
-          direction, triggersFiredMap, triggersFired: Object.keys(triggersFiredMap),
-          structuralScore, momentumScore, confidence, ob, sweep, fvg, bosChoch
+          direction,
+          triggersFiredMap,
+          triggersFired: Object.keys(triggersFiredMap),
+          structuralScore,
+          momentumScore,
+          confidence,
+          ob,
+          sweep,
+          fvg,
+          bosChoch
         };
       }
     }
   }
 
+  // Integrity Filters
   const volume24h = volumes[volumes.length - 1];
   const integrity = strategyV2.passesIntegrityFilters(symbol, currentPrice, volume24h, settings);
+
   const rsiArr = indicators.calculateRSI(closes, 14);
+  const adxResult = indicators.calculateADX(highs, lows, closes, 14);
+  const ema9 = indicators.calculateEMA(closes, 9);
+  const ema55 = indicators.calculateEMA(closes, 55);
+  const ema200 = indicators.calculateEMA(closes, 200);
 
   const scoreObj = {
     total: bestSetup ? Math.round(bestSetup.confidence * 100) : 0,
     base: bestSetup ? Math.round(bestSetup.confidence * 100) : 0,
-    scoreDisplay: bestSetup ? ('' + Math.round(bestSetup.confidence * 100)) : '0'
+    scoreDisplay: bestSetup ? `${Math.round(bestSetup.confidence * 100)}` : '0'
   };
 
   const gateSystemMock = {
     g1: { pass: true, direction: bestSetup?.direction || (closes[i] > ema55[i] ? 'LONG' : 'SHORT') },
     g2: { pass: integrity.pass, ratio: 1.5, reason: integrity.reason },
     g3: { pass: bias !== 'RANGING', reason: bias === 'RANGING' ? 'HTF Bias Ranging' : null },
-    g4: { pass: bestSetup !== null, reason: bestSetup ? null : (regimeSkipReasons.length ? regimeSkipReasons.join(' | ') : 'Confidence below threshold') },
+    g4: { pass: bestSetup !== null, reason: bestSetup ? null : 'Confidence below threshold' },
     g5: { pass: integrity.pass, reason: integrity.reason },
-    g6: { pass: true }, g7: { pass: true },
+    g6: { pass: true },
+    g7: { pass: true },
     g8: { pass: bestSetup ? bestSetup.momentumScore >= 0.3 : false },
-    g9: { pass: true }, g10: { pass: true },
+    g9: { pass: true },
+    g10: { pass: true },
     mandatoryPassed: integrity.pass && bestSetup !== null,
     confirmationPassed: bestSetup !== null,
     confirmationCount: bestSetup ? bestSetup.triggersFired.length : 0
@@ -383,27 +403,25 @@ async function evaluateCoin(symbol, candles, settings, openTrades = [], autoTrad
   if (!bestSetup || !integrity.pass) {
     return {
       action: 'NO_SIGNAL',
-      reason: !integrity.pass ? integrity.reason : (regimeSkipReasons.length ? ('Regime filter: ' + regimeSkipReasons.join(' | ')) : 'No SMC/BB setup meeting confidence threshold'),
+      reason: !integrity.pass ? integrity.reason : 'No SMC/BB setup meeting confidence threshold',
       score: scoreObj,
       gates: gateSystemMock
     };
   }
 
-  const nearestRiskLevel = strategyV2.findNearestRiskLevel(candles, bestSetup.direction, currentPrice, profile);
-  const targetLevels = strategyV2.findTargetLevels(candles, bestSetup.direction, currentPrice, profile, atrVal, 3);
-  const slTp = strategyV2.calculateSLTP(bestSetup.direction, currentPrice, atrVal, nearestRiskLevel, targetLevels);
+  // Calculate SL / TP
+  const triggerLevel = bestSetup.sweep?.level || bestSetup.ob?.low || currentPrice;
+  const impulseLeg = bestSetup.ob?.impulseMove || (atrVal * 3);
+  // FIX 4: compute a real opposing structure level and pass it through —
+  // previously omitted here too, so TP3 always used the flat 4R fallback.
+  const opposingStructureLevel = strategyV2.findOpposingStructure(candles, bestSetup.direction, currentPrice, profile);
+  const slTp = strategyV2.calculateSLTP(bestSetup.direction, triggerLevel, currentPrice, atrVal, impulseLeg, opposingStructureLevel);
 
-  // FIX: no real nearby target = not a real opportunity — reject outright
-  // rather than take a trade with nothing genuine to aim at.
-  if (!slTp.tp1) {
-    return {
-      action: 'NO_SIGNAL',
-      reason: 'No real technical target level found within range — rejected',
-      score: scoreObj,
-      gates: gateSystemMock
-    };
-  }
-
+  // Position Sizing Tier
+  // NOTE: sizeTier is computed and attached to the signal below. If live trades
+  // are still opening at 100% risk regardless of this value, the execution/order
+  // module isn't reading signal.sizeTier — that code isn't in this file (see
+  // backend/tradeManager.js).
   const sizeTier = strategyV2.sizeEntry(bestSetup.triggersFired.length, bestSetup.momentumScore);
 
   const signal = {
@@ -412,12 +430,16 @@ async function evaluateCoin(symbol, candles, settings, openTrades = [], autoTrad
     dateTimeUTC: formatUTCDateTime(Date.now()),
     signalCandleCloseTime: candles[i].closeTime,
     signalCandleCloseDateTimeUTC: formatUTCDateTime(candles[i].closeTime),
-    symbol, market: 'crypto', timeframe,
+    symbol,
+    market: 'crypto',
+    timeframe,
     exchange: settings.exchange || 'binance',
     direction: bestSetup.direction,
-    trigger: 'SMC_V3_' + bestSetup.triggersFired.join('_'),
+    trigger: `SMC_V3_${bestSetup.triggersFired.join('_')}`,
     signalCandleClose: currentPrice,
-    ema9: ema9[i], ema55: ema55[i], ema200: ema200[i],
+    ema9: ema9[i],
+    ema55: ema55[i],
+    ema200: ema200[i],
     adxAtSignal: adxResult?.adx ?? null,
     rsiAtSignal: rsiArr[i] ?? null,
     volumeRatio: 1.5,
@@ -429,11 +451,17 @@ async function evaluateCoin(symbol, candles, settings, openTrades = [], autoTrad
     },
     confidence: bestSetup.confidence,
     triggersFired: bestSetup.triggersFired,
-    usingRealHTF, sizeTier,
-    sl: slTp.sl, tp1: slTp.tp1, tp2: slTp.tp2, tp3: slTp.tp3, rr: slTp.rr,
+    usingRealHTF,
+    sizeTier,
+    sl: slTp.sl,
+    tp1: slTp.tp1,
+    tp2: slTp.tp2,
+    tp3: slTp.tp3,
+    rr: slTp.rr,
     gate1: 'PASS', gate2: 'PASS', gate3: 'PASS', gate4: 'PASS',
     gate5: 'PASS', gate6: 'PASS', gate7: 'PASS', gate8: 'PASS', gate9: 'PASS', gate10: 'PASS',
-    mandatoryPassed: true, confirmationPassed: true,
+    mandatoryPassed: true,
+    confirmationPassed: true,
     confirmationCount: bestSetup.triggersFired.length,
     tradeFired: false
   };
@@ -446,14 +474,26 @@ async function evaluateCoin(symbol, candles, settings, openTrades = [], autoTrad
   if (autoTradePaused) return { action: 'BLOCKED', reason: 'Auto-trading paused', score: scoreObj, gates: gateSystemMock };
 
   return {
-    action: '10GATE_TRADE', signal, direction: bestSetup.direction,
-    score: scoreObj, atr: atrVal, slTp, gates: gateSystemMock
+    action: '10GATE_TRADE',
+    signal,
+    direction: bestSetup.direction,
+    score: scoreObj,
+    atr: atrVal,
+    slTp,
+    gates: gateSystemMock
   };
 }
 
 module.exports = {
-  STRUCTURE_PROFILES, getProfile,
-  calculateConfluenceIndicators, assessMomentumRegime, bandWalkActive,
-  detectEMABBReversal, confirmEMABBReversal, calculateStructuralScore,
-  ema5CrossAgainst, watchdogCheck, recalibrateTriggerWeights, evaluateCoin
+  STRUCTURE_PROFILES,
+  getProfile,
+  calculateConfluenceIndicators,
+  bandWalkActive,
+  detectEMABBReversal,
+  confirmEMABBReversal,
+  calculateStructuralScore,
+  ema5CrossAgainst,
+  watchdogCheck,
+  recalibrateTriggerWeights,
+  evaluateCoin
 };
