@@ -409,13 +409,19 @@ async function evaluateCoin(symbol, candles, settings, openTrades = [], autoTrad
     };
   }
 
-  // Calculate SL / TP
-  const triggerLevel = bestSetup.sweep?.level || bestSetup.ob?.low || currentPrice;
-  const impulseLeg = bestSetup.ob?.impulseMove || (atrVal * 3);
-  // FIX 4: compute a real opposing structure level and pass it through —
-  // previously omitted here too, so TP3 always used the flat 4R fallback.
-  const opposingStructureLevel = strategyV2.findOpposingStructure(candles, bestSetup.direction, currentPrice, profile);
-  const slTp = strategyV2.calculateSLTP(bestSetup.direction, triggerLevel, currentPrice, atrVal, impulseLeg, opposingStructureLevel);
+  // Calculate SL / TP — purely level-based, no risk:reward math
+  const nearestRiskLevel = strategyV2.findNearestRiskLevel(candles, bestSetup.direction, currentPrice, profile);
+  const targetLevels = strategyV2.findTargetLevels(candles, bestSetup.direction, currentPrice, profile, atrVal, 3);
+  const slTp = strategyV2.calculateSLTP(bestSetup.direction, currentPrice, atrVal, nearestRiskLevel, targetLevels);
+
+  if (!slTp.tp1) {
+    return {
+      action: 'NO_SIGNAL',
+      reason: 'No real technical target level found within range — rejected',
+      score: scoreObj,
+      gates: gateSystemMock
+    };
+  }
 
   // Position Sizing Tier
   // NOTE: sizeTier is computed and attached to the signal below. If live trades

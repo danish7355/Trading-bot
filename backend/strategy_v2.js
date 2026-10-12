@@ -438,9 +438,20 @@ function calculateSLTP(direction, entryPrice, atrPrice, nearestRiskLevel = null,
   const [lvl1, lvl2, lvl3] = targetLevels;
   const applyBuffer = (lvl) => lvl === undefined ? null : (direction === 'LONG' ? lvl - tpBuffer : lvl + tpBuffer);
 
-  const tp1 = applyBuffer(lvl1);
-  const tp2 = applyBuffer(lvl2);
-  const tp3 = applyBuffer(lvl3);
+  let tp1 = applyBuffer(lvl1);
+  let tp2 = applyBuffer(lvl2);
+  let tp3 = applyBuffer(lvl3);
+
+  // Hard floor/ordering check: TP3 must be beyond TP2, TP2 beyond TP1
+  if (direction === 'LONG') {
+    if (tp1 !== null && tp1 <= entryPrice) tp1 = null;
+    if (tp2 !== null && (tp1 === null || tp2 <= tp1)) tp2 = null;
+    if (tp3 !== null && ((tp2 !== null && tp3 <= tp2) || (tp2 === null && tp1 !== null && tp3 <= tp1))) tp3 = null;
+  } else {
+    if (tp1 !== null && tp1 >= entryPrice) tp1 = null;
+    if (tp2 !== null && (tp1 === null || tp2 >= tp1)) tp2 = null;
+    if (tp3 !== null && ((tp2 !== null && tp3 >= tp2) || (tp2 === null && tp1 !== null && tp3 >= tp1))) tp3 = null;
+  }
 
   const r = Math.abs(entryPrice - sl);
   const rr = (tp2 !== null && r > 0) ? Math.round((Math.abs(tp2 - entryPrice) / r) * 100) / 100 : null; // informational only — never enforced as a gate
